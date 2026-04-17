@@ -44,6 +44,11 @@
       "types": "./dist/adapters/http/strapi.d.ts",
       "import": "./dist/adapters/http/strapi.js",
       "require": "./dist/adapters/http/strapi.cjs"
+    },
+    "./socket/socketio": {
+      "types": "./dist/adapters/socket/socketio.d.ts",
+      "import": "./dist/adapters/socket/socketio.js",
+      "require": "./dist/adapters/socket/socketio.cjs"
     }
   },
   "files": [
@@ -69,6 +74,8 @@
     "@types/node": "^25.6.0",
     "express": "^5.2.1",
     "koa": "^3.2.0",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
@@ -81,10 +88,12 @@
   },
   "peerDependencies": {
     "express": ">=4.0.0 <6.0.0",
-    "koa": ">=2.0.0 <4.0.0"
+    "koa": ">=2.0.0 <4.0.0",
+    "socket.io": ">=4.0.0 <5.0.0"
   },
   "peerDependenciesMeta": {
     "express": { "optional": true },
-    "koa": { "optional": true }
+    "koa": { "optional": true },
+    "socket.io": { "optional": true }
   }
 }
