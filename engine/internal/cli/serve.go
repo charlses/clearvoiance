@@ -19,6 +19,7 @@ import (
 	"github.com/charlses/clearvoiance/engine/internal/storage"
 	"github.com/charlses/clearvoiance/engine/internal/storage/blob"
 	chstore "github.com/charlses/clearvoiance/engine/internal/storage/clickhouse"
+	"github.com/charlses/clearvoiance/engine/internal/storage/metadata"
 )
 
 // Default bind address. Loopback-only by default; operators opt into
@@ -28,6 +29,7 @@ const defaultGRPCAddr = "127.0.0.1:9100"
 type serveOpts struct {
 	grpcAddr      string
 	clickhouseDSN string
+	postgresDSN   string
 
 	// MinIO / S3
 	minioEndpoint  string
@@ -57,6 +59,11 @@ func newServeCmd(log *slog.Logger, version string) *cobra.Command {
 		os.Getenv("CLEARVOIANCE_CLICKHOUSE_DSN"),
 		"ClickHouse DSN, e.g. clickhouse://default:dev@localhost:9000/clearvoiance. "+
 			"Leave empty to run in ephemeral (noop storage) mode.")
+
+	cmd.Flags().StringVar(&opts.postgresDSN, "postgres-dsn",
+		os.Getenv("CLEARVOIANCE_POSTGRES_DSN"),
+		"Postgres DSN for metadata (sessions). Leave empty to keep sessions "+
+			"in memory only; without this, SDK WALs won't drain across engine restart.")
 
 	// Blob storage (S3-compatible). All empty → no blob backend, SDKs fall
 	// back to inline-or-truncate for large bodies.
@@ -91,7 +98,13 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	mgr := sessions.NewManager()
+	meta, err := openMetaStore(ctx, log, opts.postgresDSN)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = meta.Close() }()
+
+	mgr := sessions.NewManager(meta.Sessions())
 
 	store, err := openStore(ctx, log, opts.clickhouseDSN)
 	if err != nil {
@@ -158,6 +171,18 @@ func openStore(ctx context.Context, log *slog.Logger, dsn string) (storage.Event
 	}
 	log.Info("connecting to ClickHouse", "dsn_host", redactDSN(dsn))
 	return chstore.Open(ctx, dsn)
+}
+
+// openMetaStore returns a Postgres-backed metadata store when a DSN is
+// provided, or a Noop store otherwise. Noop keeps sessions in-memory and
+// breaks WAL drain across engine restart — production must set a DSN.
+func openMetaStore(ctx context.Context, log *slog.Logger, dsn string) (metadata.Store, error) {
+	if dsn == "" {
+		log.Warn("no --postgres-dsn set — sessions will not survive engine restart (SDK WALs won't drain)")
+		return metadata.Noop{}, nil
+	}
+	log.Info("connecting to Postgres (metadata)", "dsn_host", redactDSN(dsn))
+	return metadata.OpenPostgres(ctx, dsn)
 }
 
 // openBlobStore returns an S3-backed blob store when --minio-endpoint is set,

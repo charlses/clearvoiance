@@ -55,15 +55,18 @@ func NewCaptureServer(
 
 // StartSession opens a new capture window.
 // Auth is a Phase 1b concern — for now any caller succeeds.
-func (s *CaptureServer) StartSession(_ context.Context, req *pb.StartSessionRequest) (*pb.StartSessionResponse, error) {
+func (s *CaptureServer) StartSession(ctx context.Context, req *pb.StartSessionRequest) (*pb.StartSessionResponse, error) {
 	if req.GetName() == "" {
 		return nil, status.Error(codes.InvalidArgument, "session name is required")
 	}
 
-	sess := s.mgr.Start(sessions.StartRequest{
+	sess, err := s.mgr.Start(ctx, sessions.StartRequest{
 		Name:   req.GetName(),
 		Labels: req.GetLabels(),
 	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "start session: %v", err)
+	}
 
 	s.log.Info("session started",
 		"session_id", sess.ID,
@@ -77,8 +80,8 @@ func (s *CaptureServer) StartSession(_ context.Context, req *pb.StartSessionRequ
 }
 
 // StopSession closes a session and returns captured totals.
-func (s *CaptureServer) StopSession(_ context.Context, req *pb.StopSessionRequest) (*pb.StopSessionResponse, error) {
-	sess, err := s.mgr.Stop(req.GetSessionId())
+func (s *CaptureServer) StopSession(ctx context.Context, req *pb.StopSessionRequest) (*pb.StopSessionResponse, error) {
+	sess, err := s.mgr.Stop(ctx, req.GetSessionId())
 	if err != nil {
 		return nil, translateSessionErr(err)
 	}
@@ -99,7 +102,7 @@ func (s *CaptureServer) StopSession(_ context.Context, req *pb.StopSessionReques
 // GetBlobUploadURL returns a presigned PUT URL for large event bodies. The
 // SDK uploads directly to blob storage — bodies never traverse the engine.
 func (s *CaptureServer) GetBlobUploadURL(ctx context.Context, req *pb.GetBlobUploadURLRequest) (*pb.GetBlobUploadURLResponse, error) {
-	if _, err := s.mgr.Get(req.GetSessionId()); err != nil {
+	if _, err := s.mgr.Get(ctx, req.GetSessionId()); err != nil {
 		return nil, translateSessionErr(err)
 	}
 	if req.GetSha256() == "" {
@@ -132,8 +135,8 @@ func (s *CaptureServer) GetBlobUploadURL(ctx context.Context, req *pb.GetBlobUpl
 }
 
 // Heartbeat echoes session status. Backpressure is not emitted in Phase 1a.
-func (s *CaptureServer) Heartbeat(_ context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
-	sess, err := s.mgr.Get(req.GetSessionId())
+func (s *CaptureServer) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
+	sess, err := s.mgr.Get(ctx, req.GetSessionId())
 	if err != nil {
 		return nil, translateSessionErr(err)
 	}
@@ -155,7 +158,7 @@ func (s *CaptureServer) StreamEvents(stream pb.CaptureService_StreamEventsServer
 		return status.Error(codes.InvalidArgument, "first message must be a Handshake")
 	}
 
-	sess, err := s.mgr.Get(hs.GetSessionId())
+	sess, err := s.mgr.Get(stream.Context(), hs.GetSessionId())
 	if err != nil {
 		return translateSessionErr(err)
 	}
