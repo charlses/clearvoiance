@@ -22,48 +22,88 @@
   ],
   "type": "module",
   "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./http/express": {
-      "types": "./dist/adapters/http/express.d.ts",
-      "import": "./dist/adapters/http/express.js",
-      "require": "./dist/adapters/http/express.cjs"
+      "import": {
+        "types": "./dist/adapters/http/express.d.mts",
+        "default": "./dist/adapters/http/express.mjs"
+      },
+      "require": {
+        "types": "./dist/adapters/http/express.d.cts",
+        "default": "./dist/adapters/http/express.cjs"
+      }
     },
     "./http/koa": {
-      "types": "./dist/adapters/http/koa.d.ts",
-      "import": "./dist/adapters/http/koa.js",
-      "require": "./dist/adapters/http/koa.cjs"
+      "import": {
+        "types": "./dist/adapters/http/koa.d.mts",
+        "default": "./dist/adapters/http/koa.mjs"
+      },
+      "require": {
+        "types": "./dist/adapters/http/koa.d.cts",
+        "default": "./dist/adapters/http/koa.cjs"
+      }
     },
     "./http/strapi": {
-      "types": "./dist/adapters/http/strapi.d.ts",
-      "import": "./dist/adapters/http/strapi.js",
-      "require": "./dist/adapters/http/strapi.cjs"
+      "import": {
+        "types": "./dist/adapters/http/strapi.d.mts",
+        "default": "./dist/adapters/http/strapi.mjs"
+      },
+      "require": {
+        "types": "./dist/adapters/http/strapi.d.cts",
+        "default": "./dist/adapters/http/strapi.cjs"
+      }
     },
     "./socket/socketio": {
-      "types": "./dist/adapters/socket/socketio.d.ts",
-      "import": "./dist/adapters/socket/socketio.js",
-      "require": "./dist/adapters/socket/socketio.cjs"
+      "import": {
+        "types": "./dist/adapters/socket/socketio.d.mts",
+        "default": "./dist/adapters/socket/socketio.mjs"
+      },
+      "require": {
+        "types": "./dist/adapters/socket/socketio.d.cts",
+        "default": "./dist/adapters/socket/socketio.cjs"
+      }
     },
     "./cron/node-cron": {
-      "types": "./dist/adapters/cron/node-cron.d.ts",
-      "import": "./dist/adapters/cron/node-cron.js",
-      "require": "./dist/adapters/cron/node-cron.cjs"
+      "import": {
+        "types": "./dist/adapters/cron/node-cron.d.mts",
+        "default": "./dist/adapters/cron/node-cron.mjs"
+      },
+      "require": {
+        "types": "./dist/adapters/cron/node-cron.d.cts",
+        "default": "./dist/adapters/cron/node-cron.cjs"
+      }
     },
     "./outbound": {
-      "types": "./dist/outbound/index.d.ts",
-      "import": "./dist/outbound/index.js",
-      "require": "./dist/outbound/index.cjs"
+      "import": {
+        "types": "./dist/outbound/index.d.mts",
+        "default": "./dist/outbound/index.mjs"
+      },
+      "require": {
+        "types": "./dist/outbound/index.d.cts",
+        "default": "./dist/outbound/index.cjs"
+      }
     },
     "./hermetic": {
-      "types": "./dist/hermetic/index.d.ts",
-      "import": "./dist/hermetic/index.js",
-      "require": "./dist/hermetic/index.cjs"
+      "import": {
+        "types": "./dist/hermetic/index.d.mts",
+        "default": "./dist/hermetic/index.mjs"
+      },
+      "require": {
+        "types": "./dist/hermetic/index.d.cts",
+        "default": "./dist/hermetic/index.cjs"
+      }
     }
   },
   "files": [
@@ -72,8 +112,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup",
-    "dev": "tsup --watch",
+    "build": "tsdown",
+    "dev": "tsdown --watch",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -93,7 +133,7 @@
     "node-cron": "^4.2.1",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
-    "tsup": "^8.5.1",
+    "tsdown": "^0.21.9",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.8",
@@ -106,13 +146,21 @@
   "peerDependencies": {
     "express": ">=4.0.0 <6.0.0",
     "koa": ">=2.0.0 <4.0.0",
-    "socket.io": ">=4.0.0 <5.0.0",
-    "node-cron": ">=3.0.0 <5.0.0"
+    "node-cron": ">=3.0.0 <5.0.0",
+    "socket.io": ">=4.0.0 <5.0.0"
   },
   "peerDependenciesMeta": {
-    "express": { "optional": true },
-    "koa": { "optional": true },
-    "socket.io": { "optional": true },
-    "node-cron": { "optional": true }
+    "express": {
+      "optional": true
+    },
+    "koa": {
+      "optional": true
+    },
+    "socket.io": {
+      "optional": true
+    },
+    "node-cron": {
+      "optional": true
+    }
   }
 }

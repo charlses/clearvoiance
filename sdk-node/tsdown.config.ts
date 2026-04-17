@@ -1,4 +1,4 @@
-import { defineConfig } from "tsup";
+import { defineConfig } from "tsdown";
 
 export default defineConfig({
   entry: {
@@ -16,8 +16,6 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   target: "node24",
-  splitting: false,
-  treeshake: true,
   // Never bundle the SDK's own runtime deps or peer deps — users install them.
   external: [
     "@grpc/grpc-js",
