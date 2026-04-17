@@ -39,6 +39,7 @@ message AuthStrategy {
     AuthNone none = 1;
     AuthStaticSwap static_swap = 2;
     AuthJwtResign jwt_resign = 3;
+    AuthCallback callback = 4;
   }
 }
 
@@ -61,11 +62,19 @@ message AuthJwtResign {
   int64 fresh_expiry_seconds = 4;    // defaults to 3600 when <= 0
 }
 
+// Posts {event_id, user_id, method, path} to `url`, expects back
+// {header, value}. Responses are cached per user_id for cache_ttl_seconds.
+message AuthCallback {
+  string url = 1;
+  int64 cache_ttl_seconds = 2;       // defaults to 300 when <= 0
+}
+
 // MutatorConfig selects how to rewrite request bodies per virtual user.
 message MutatorConfig {
   oneof mutator {
     MutatorNone none = 1;
     MutatorUniqueFields unique_fields = 2;
+    MutatorCustomScript custom_script = 3;
   }
 }
 
@@ -77,6 +86,14 @@ message MutatorNone {}
 message MutatorUniqueFields {
   repeated string json_paths = 1;    // e.g. ["$.email", "$.username"]
   int64 int_multiplier = 2;          // for integer fields; defaults to 1_000_000
+}
+
+// Runs a user-provided Starlark script per dispatch. The script must define
+// `def mutate(body, content_type, vu) -> str` where body is the captured
+// request body as a string and the return is the replacement body. The
+// sandbox has no IO and the default starlark json module.
+message MutatorCustomScript {
+  string source = 1;
 }
 
 message StartReplayResponse {

@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+
+	"go.starlark.net/starlark"
+	"go.starlark.net/starlarkjson"
 
 	pb "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1"
 )
@@ -78,6 +82,59 @@ func (m MutatorUniqueFields) Mutate(body []byte, contentType string, vu int) ([]
 // Name returns "unique_fields".
 func (MutatorUniqueFields) Name() string { return "unique_fields" }
 
+// MutatorCustomScript runs a user-supplied Starlark script per dispatch. The
+// script must define `mutate(body, content_type, vu) -> str`. Body in / body
+// out are strings; the script decides whether to parse JSON (using the
+// starlark `json` module).
+type MutatorCustomScript struct {
+	Source string
+
+	once    sync.Once
+	fn      starlark.Value
+	initErr error
+}
+
+// Mutate compiles the source once and invokes mutate().
+func (m *MutatorCustomScript) Mutate(body []byte, contentType string, vu int) ([]byte, error) {
+	m.once.Do(func() {
+		thread := &starlark.Thread{Name: "mutator-init"}
+		predeclared := starlark.StringDict{"json": starlarkjson.Module}
+		globals, err := starlark.ExecFile(thread, "mutator.star",
+			m.Source, predeclared)
+		if err != nil {
+			m.initErr = fmt.Errorf("compile mutator script: %w", err)
+			return
+		}
+		fn, ok := globals["mutate"]
+		if !ok {
+			m.initErr = fmt.Errorf("mutator script must define mutate(body, content_type, vu)")
+			return
+		}
+		m.fn = fn
+	})
+	if m.initErr != nil {
+		return nil, m.initErr
+	}
+
+	thread := &starlark.Thread{Name: "mutator-call"}
+	result, err := starlark.Call(thread, m.fn, starlark.Tuple{
+		starlark.String(string(body)),
+		starlark.String(contentType),
+		starlark.MakeInt(vu),
+	}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("call mutate(): %w", err)
+	}
+	s, ok := result.(starlark.String)
+	if !ok {
+		return nil, fmt.Errorf("mutate() must return str, got %s", result.Type())
+	}
+	return []byte(string(s)), nil
+}
+
+// Name returns "custom_script".
+func (*MutatorCustomScript) Name() string { return "custom_script" }
+
 // MutatorFromProto builds a Mutator from the wire message.
 func MutatorFromProto(msg *pb.MutatorConfig) Mutator {
 	if msg == nil {
@@ -91,6 +148,8 @@ func MutatorFromProto(msg *pb.MutatorConfig) Mutator {
 			Paths:         m.UniqueFields.GetJsonPaths(),
 			IntMultiplier: m.UniqueFields.GetIntMultiplier(),
 		}
+	case *pb.MutatorConfig_CustomScript:
+		return &MutatorCustomScript{Source: m.CustomScript.GetSource()}
 	}
 	return MutatorNone{}
 }

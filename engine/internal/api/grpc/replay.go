@@ -114,10 +114,16 @@ func (s *ReplayServer) GetReplay(ctx context.Context, req *pb.GetReplayRequest) 
 	return out, nil
 }
 
-// CancelReplay is a stub for Phase 2a; proper cancellation + partial results
-// land in 2b.
-func (s *ReplayServer) CancelReplay(_ context.Context, _ *pb.CancelReplayRequest) (*pb.CancelReplayResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "cancel lands in Phase 2b")
+// CancelReplay signals the background run to stop. The background run's
+// terminal row lands with status="cancelled".
+func (s *ReplayServer) CancelReplay(_ context.Context, req *pb.CancelReplayRequest) (*pb.CancelReplayResponse, error) {
+	if req.GetReplayId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "replay_id is required")
+	}
+	if s.engine.Cancel(req.GetReplayId()) {
+		return &pb.CancelReplayResponse{Status: "cancelling"}, nil
+	}
+	return &pb.CancelReplayResponse{Status: "not_running"}, nil
 }
 
 func nowNs() int64 { return time.Now().UnixNano() }

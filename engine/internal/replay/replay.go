@@ -48,6 +48,16 @@ type TargetConfig struct {
 	BaseURL string
 	Auth    AuthStrategy
 	Mutator Mutator
+	// BlobReader rehydrates captured BlobRef bodies. nil = no blob backend;
+	// BlobRef bodies will be skipped by the dispatcher with a "blob:skipped"
+	// error row rather than sending an empty body.
+	BlobReader BlobReader
+}
+
+// BlobReader is the minimal contract HTTP/Socket dispatchers need to fetch
+// captured large bodies from object storage. Implemented by blob.Store.
+type BlobReader interface {
+	Get(ctx context.Context, bucket, key string) ([]byte, error)
 }
 
 // DispatchResult is the shape each dispatcher returns per event.
@@ -88,15 +98,22 @@ type Engine struct {
 	source      EventSource
 	sink        ResultSink
 	replays     metadata.Replays
+	blobs       BlobReader
 	dispatchers []Dispatcher
+
+	// Running replays so CancelReplay can stop them.
+	mu      sync.Mutex
+	running map[string]context.CancelFunc
 }
 
 // NewEngine wires an Engine. Pass at least one Dispatcher (e.g. HTTPDispatcher).
+// blobs may be nil; when nil, captured BlobRef bodies are skipped during replay.
 func NewEngine(
 	log *slog.Logger,
 	source EventSource,
 	sink ResultSink,
 	replays metadata.Replays,
+	blobs BlobReader,
 	dispatchers ...Dispatcher,
 ) *Engine {
 	return &Engine{
@@ -104,8 +121,21 @@ func NewEngine(
 		source:      source,
 		sink:        sink,
 		replays:     replays,
+		blobs:       blobs,
 		dispatchers: dispatchers,
+		running:     make(map[string]context.CancelFunc),
 	}
+}
+
+// Cancel stops an in-flight replay run. Safe to call for unknown ids.
+func (e *Engine) Cancel(replayID string) bool {
+	e.mu.Lock()
+	cancel, ok := e.running[replayID]
+	e.mu.Unlock()
+	if ok {
+		cancel()
+	}
+	return ok
 }
 
 // NewReplayID generates a unique replay id.
@@ -145,14 +175,33 @@ func (e *Engine) Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("create replay row: %w", err)
 	}
 
-	summary, runErr := e.run(ctx, cfg)
+	// Register for cancellation.
+	runCtx, cancel := context.WithCancel(ctx)
+	e.mu.Lock()
+	e.running[cfg.ReplayID] = cancel
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.running, cfg.ReplayID)
+		e.mu.Unlock()
+		cancel()
+	}()
+
+	summary, runErr := e.run(runCtx, cfg)
 	finishedAt := time.Now().UTC()
 	status := "completed"
 	errMsg := ""
 	if runErr != nil {
-		status = "failed"
-		errMsg = runErr.Error()
+		if errors.Is(runErr, context.Canceled) {
+			status = "cancelled"
+			errMsg = ""
+		} else {
+			status = "failed"
+			errMsg = runErr.Error()
+		}
 	}
+	// Use the parent context for the final UPDATE so a canceled replay still
+	// gets its terminal row written.
 	if err := e.replays.MarkFinished(ctx, cfg.ReplayID, status, finishedAt,
 		summary.metrics(), errMsg); err != nil {
 		e.log.Error("mark replay finished", "err", err)
@@ -190,7 +239,12 @@ func (e *Engine) run(ctx context.Context, cfg Config) (*summary, error) {
 	if mutator == nil {
 		mutator = MutatorNone{}
 	}
-	target := &TargetConfig{BaseURL: cfg.TargetURL, Auth: auth, Mutator: mutator}
+	target := &TargetConfig{
+		BaseURL:    cfg.TargetURL,
+		Auth:       auth,
+		Mutator:    mutator,
+		BlobReader: e.blobs,
+	}
 
 	vuCount := cfg.VirtualUsers
 	if vuCount < 1 {

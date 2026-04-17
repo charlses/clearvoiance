@@ -34,12 +34,16 @@ type PresignPutResult struct {
 // backend is wired up; callers should fall back to inline-or-truncate.
 var ErrBlobNotConfigured = errors.New("blob storage not configured")
 
-// Store abstracts object storage behind a presigned-URL interface.
+// Store abstracts object storage. Capture issues presigned PUT URLs; replay
+// fetches bodies back via Get.
 type Store interface {
 	// PresignPut returns a URL (plus any required headers) the SDK must PUT
-	// the body to. Keys are derived from the session id + sha256 so the same
-	// body uploaded twice overwrites itself — natural dedup.
+	// the body to.
 	PresignPut(ctx context.Context, req PresignPutRequest) (*PresignPutResult, error)
+
+	// Get reads a previously-uploaded blob. Used by the replay dispatcher
+	// when a captured body is a BlobRef instead of inline bytes.
+	Get(ctx context.Context, bucket, key string) ([]byte, error)
 
 	// Close releases the underlying client.
 	Close() error
@@ -51,6 +55,11 @@ type Noop struct{}
 
 // PresignPut always errors.
 func (Noop) PresignPut(_ context.Context, _ PresignPutRequest) (*PresignPutResult, error) {
+	return nil, ErrBlobNotConfigured
+}
+
+// Get always errors. Replay dispatcher should skip BlobRef bodies when hit.
+func (Noop) Get(_ context.Context, _, _ string) ([]byte, error) {
 	return nil, ErrBlobNotConfigured
 }
 

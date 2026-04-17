@@ -69,7 +69,16 @@ func (d *HTTPDispatcher) Dispatch(ctx context.Context, ev *pb.Event, target *Tar
 	}
 	fullURL := base + path
 
-	bodyBytes := extractBody(httpEv.GetRequestBody())
+	bodyBytes, blobErr := fetchBody(ctx, httpEv.GetRequestBody(), target.BlobReader)
+	if blobErr != nil {
+		return DispatchResult{
+			HTTPMethod:   httpEv.GetMethod(),
+			HTTPPath:     path,
+			HTTPRoute:    httpEv.GetRouteTemplate(),
+			ErrorCode:    "blob_fetch",
+			ErrorMessage: blobErr.Error(),
+		}, nil
+	}
 
 	// Mutate per-VU (vu=0 leaves the body alone).
 	if target.Mutator != nil {
@@ -181,12 +190,28 @@ func extractHTTP(ev *pb.Event) *pb.HttpEvent {
 	return nil
 }
 
-func extractBody(body *pb.Body) []byte {
+// fetchBody returns the request body bytes for a captured Body, pulling from
+// blob storage when the body is a BlobRef. Returns (nil, nil) for empty
+// bodies. Returns (nil, err) when a BlobRef exists but no reader is wired up
+// or the fetch fails — the caller turns this into a dispatcher result row.
+func fetchBody(ctx context.Context, body *pb.Body, blobs interface {
+	Get(context.Context, string, string) ([]byte, error)
+}) ([]byte, error) {
 	if body == nil {
-		return nil
+		return nil, nil
 	}
-	// Phase 2a: inline only. BlobRef bodies come back from MinIO in 2b.
-	return body.GetInline()
+	if inline := body.GetInline(); len(inline) > 0 {
+		return inline, nil
+	}
+	ref := body.GetBlob()
+	if ref == nil {
+		return nil, nil
+	}
+	if blobs == nil {
+		return nil, fmt.Errorf("body stored as blob %s/%s but no blob reader configured",
+			ref.GetBucket(), ref.GetKey())
+	}
+	return blobs.Get(ctx, ref.GetBucket(), ref.GetKey())
 }
 
 // shouldSkipHeader drops hop-by-hop + replay-toxic headers.

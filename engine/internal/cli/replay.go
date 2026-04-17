@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -35,15 +36,18 @@ func newReplayStartCmd() *cobra.Command {
 		speedup         float64
 		label           string
 		virtualUsers    int32
-		authMode        string
-		authHeader      string
-		authPrefix      string
-		authToken       string
-		authSigningKey  string
-		authFreshExpiry int64
-		mutatorMode     string
-		mutatorPaths    []string
-		mutatorIntMul   int64
+		authMode         string
+		authHeader       string
+		authPrefix       string
+		authToken        string
+		authSigningKey   string
+		authFreshExpiry  int64
+		authCallbackURL  string
+		authCacheTTL     int64
+		mutatorMode      string
+		mutatorPaths     []string
+		mutatorIntMul    int64
+		mutatorScriptFile string
 	)
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -68,11 +72,13 @@ func newReplayStartCmd() *cobra.Command {
 			client := pb.NewReplayServiceClient(conn)
 
 			authMsg, err := buildAuthStrategy(authMode, authHeader, authPrefix,
-				authToken, authSigningKey, authFreshExpiry)
+				authToken, authSigningKey, authFreshExpiry,
+				authCallbackURL, authCacheTTL)
 			if err != nil {
 				return err
 			}
-			mutatorMsg, err := buildMutatorConfig(mutatorMode, mutatorPaths, mutatorIntMul)
+			mutatorMsg, err := buildMutatorConfig(mutatorMode, mutatorPaths, mutatorIntMul,
+				mutatorScriptFile)
 			if err != nil {
 				return err
 			}
@@ -101,7 +107,7 @@ func newReplayStartCmd() *cobra.Command {
 		"Fan each captured event out to N dispatches (with mutator applied per VU). Default 1.")
 
 	cmd.Flags().StringVar(&authMode, "auth", "none",
-		"Auth rewrite: none | static-swap | jwt-resign")
+		"Auth rewrite: none | static-swap | jwt-resign | callback")
 	cmd.Flags().StringVar(&authHeader, "auth-header", "",
 		"Header to overwrite (default 'Authorization').")
 	cmd.Flags().StringVar(&authPrefix, "auth-prefix", "", "Prefix before the token, e.g. 'Bearer '.")
@@ -110,16 +116,24 @@ func newReplayStartCmd() *cobra.Command {
 		"HMAC secret for jwt-resign auth (HS256).")
 	cmd.Flags().Int64Var(&authFreshExpiry, "auth-fresh-expiry", 3600,
 		"Expiry (seconds from now) for re-signed JWTs.")
+	cmd.Flags().StringVar(&authCallbackURL, "auth-callback-url", "",
+		"URL to POST {event_id,user_id,method,path} to; callback returns {header,value}.")
+	cmd.Flags().Int64Var(&authCacheTTL, "auth-cache-ttl", 300,
+		"Seconds to cache per-user callback responses.")
 
-	cmd.Flags().StringVar(&mutatorMode, "mutator", "none", "Body mutator: none | unique-fields")
+	cmd.Flags().StringVar(&mutatorMode, "mutator", "none",
+		"Body mutator: none | unique-fields | custom-script")
 	cmd.Flags().StringSliceVar(&mutatorPaths, "mutator-path", nil,
 		"JSONPaths to make unique per VU (e.g. $.email). Repeatable.")
 	cmd.Flags().Int64Var(&mutatorIntMul, "mutator-int-multiplier", 1_000_000,
 		"Amount added to integer fields per VU: value += vu * multiplier.")
+	cmd.Flags().StringVar(&mutatorScriptFile, "mutator-script-file", "",
+		"Path to a Starlark mutator script (expects 'def mutate(body, content_type, vu)').")
 	return cmd
 }
 
-func buildAuthStrategy(mode, header, prefix, token, signingKey string, fresh int64) (*pb.AuthStrategy, error) {
+func buildAuthStrategy(mode, header, prefix, token, signingKey string, fresh int64,
+	callbackURL string, cacheTTL int64) (*pb.AuthStrategy, error) {
 	switch mode {
 	case "", "none":
 		return &pb.AuthStrategy{Strategy: &pb.AuthStrategy_None{None: &pb.AuthNone{}}}, nil
@@ -140,11 +154,18 @@ func buildAuthStrategy(mode, header, prefix, token, signingKey string, fresh int
 				SigningKey: signingKey, FreshExpirySeconds: fresh,
 			},
 		}}, nil
+	case "callback":
+		if callbackURL == "" {
+			return nil, errors.New("--auth-callback-url is required for --auth=callback")
+		}
+		return &pb.AuthStrategy{Strategy: &pb.AuthStrategy_Callback{
+			Callback: &pb.AuthCallback{Url: callbackURL, CacheTtlSeconds: cacheTTL},
+		}}, nil
 	}
-	return nil, fmt.Errorf("unknown --auth mode %q (want none | static-swap | jwt-resign)", mode)
+	return nil, fmt.Errorf("unknown --auth mode %q (want none | static-swap | jwt-resign | callback)", mode)
 }
 
-func buildMutatorConfig(mode string, paths []string, intMul int64) (*pb.MutatorConfig, error) {
+func buildMutatorConfig(mode string, paths []string, intMul int64, scriptFile string) (*pb.MutatorConfig, error) {
 	switch mode {
 	case "", "none":
 		return &pb.MutatorConfig{Mutator: &pb.MutatorConfig_None{None: &pb.MutatorNone{}}}, nil
@@ -155,8 +176,19 @@ func buildMutatorConfig(mode string, paths []string, intMul int64) (*pb.MutatorC
 		return &pb.MutatorConfig{Mutator: &pb.MutatorConfig_UniqueFields{
 			UniqueFields: &pb.MutatorUniqueFields{JsonPaths: paths, IntMultiplier: intMul},
 		}}, nil
+	case "custom-script":
+		if scriptFile == "" {
+			return nil, errors.New("--mutator-script-file is required for --mutator=custom-script")
+		}
+		source, err := os.ReadFile(scriptFile)
+		if err != nil {
+			return nil, fmt.Errorf("read mutator script: %w", err)
+		}
+		return &pb.MutatorConfig{Mutator: &pb.MutatorConfig_CustomScript{
+			CustomScript: &pb.MutatorCustomScript{Source: string(source)},
+		}}, nil
 	}
-	return nil, fmt.Errorf("unknown --mutator mode %q (want none | unique-fields)", mode)
+	return nil, fmt.Errorf("unknown --mutator mode %q (want none | unique-fields | custom-script)", mode)
 }
 
 func newReplayStatusCmd() *cobra.Command {

@@ -6,6 +6,7 @@ package blob
 import (
 	"context"
 	"fmt"
+	"io"
 	"path"
 	"time"
 
@@ -123,6 +124,19 @@ func (s *S3) PresignPut(ctx context.Context, req PresignPutRequest) (*PresignPut
 		RequiredHeaders: required,
 		ExpiresAt:       time.Now().Add(s.expiry),
 	}, nil
+}
+
+// Get fetches a blob's bytes. Used by replay to rehydrate BlobRef bodies.
+func (s *S3) Get(ctx context.Context, bucket, key string) ([]byte, error) {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("blob get %s/%s: %w", bucket, key, err)
+	}
+	defer out.Body.Close()
+	return io.ReadAll(out.Body)
 }
 
 // Close is a no-op for S3 — the client is stateless, no connections to drain.

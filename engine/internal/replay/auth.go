@@ -1,10 +1,15 @@
 package replay
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -113,6 +118,99 @@ func (a AuthJWTResign) Apply(req *http.Request) error {
 // Name returns "jwt_resign".
 func (AuthJWTResign) Name() string { return "jwt_resign" }
 
+// AuthCallback asks a user-provided HTTP endpoint for a fresh credential per
+// captured user id. The callback receives {event_id, user_id, path, method}
+// and must return {header, value} JSON. Responses are cached per user_id for
+// CacheTTL so we don't hit the callback on every event.
+type AuthCallback struct {
+	URL      string
+	CacheTTL time.Duration
+
+	mu    sync.Mutex
+	cache map[string]authCacheEntry
+}
+
+type authCacheEntry struct {
+	Header    string
+	Value     string
+	ExpiresAt time.Time
+}
+
+// Apply fetches credentials (using the cache) and sets the header.
+func (a *AuthCallback) Apply(req *http.Request) error {
+	if a.URL == "" {
+		return errors.New("auth callback: URL is required")
+	}
+	userID := req.Header.Get("X-Clearvoiance-User-Id")
+	eventID := req.Header.Get("X-Clearvoiance-Event-Id")
+	cacheKey := userID
+
+	a.mu.Lock()
+	if a.cache == nil {
+		a.cache = make(map[string]authCacheEntry)
+	}
+	if entry, ok := a.cache[cacheKey]; ok && time.Now().Before(entry.ExpiresAt) {
+		a.mu.Unlock()
+		req.Header.Set(entry.Header, entry.Value)
+		return nil
+	}
+	a.mu.Unlock()
+
+	payload := map[string]string{
+		"event_id": eventID,
+		"user_id":  userID,
+		"method":   req.Method,
+		"path":     req.URL.Path,
+	}
+	body, _ := json.Marshal(payload)
+	cbCtx, cancel := context.WithTimeout(req.Context(), 5*time.Second)
+	defer cancel()
+	cbReq, err := http.NewRequestWithContext(cbCtx, http.MethodPost, a.URL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("auth callback: build request: %w", err)
+	}
+	cbReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(cbReq)
+	if err != nil {
+		return fmt.Errorf("auth callback: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("auth callback: non-200 %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var out struct {
+		Header string `json:"header"`
+		Value  string `json:"value"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return fmt.Errorf("auth callback: decode response: %w", err)
+	}
+	if out.Header == "" {
+		out.Header = "Authorization"
+	}
+
+	ttl := a.CacheTTL
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
+	}
+	a.mu.Lock()
+	a.cache[cacheKey] = authCacheEntry{
+		Header:    out.Header,
+		Value:     out.Value,
+		ExpiresAt: time.Now().Add(ttl),
+	}
+	a.mu.Unlock()
+
+	req.Header.Set(out.Header, out.Value)
+	return nil
+}
+
+// Name returns "callback".
+func (*AuthCallback) Name() string { return "callback" }
+
 // AuthFromProto builds an AuthStrategy from the wire message. Unset / None
 // both return AuthNone so callers always get a usable value.
 func AuthFromProto(msg *pb.AuthStrategy) AuthStrategy {
@@ -130,10 +228,15 @@ func AuthFromProto(msg *pb.AuthStrategy) AuthStrategy {
 		}
 	case *pb.AuthStrategy_JwtResign:
 		return AuthJWTResign{
-			Header:     s.JwtResign.GetHeader(),
-			Prefix:     s.JwtResign.GetPrefix(),
-			SigningKey: []byte(s.JwtResign.GetSigningKey()),
+			Header:      s.JwtResign.GetHeader(),
+			Prefix:      s.JwtResign.GetPrefix(),
+			SigningKey:  []byte(s.JwtResign.GetSigningKey()),
 			FreshExpiry: time.Duration(s.JwtResign.GetFreshExpirySeconds()) * time.Second,
+		}
+	case *pb.AuthStrategy_Callback:
+		return &AuthCallback{
+			URL:      s.Callback.GetUrl(),
+			CacheTTL: time.Duration(s.Callback.GetCacheTtlSeconds()) * time.Second,
 		}
 	}
 	return AuthNone{}

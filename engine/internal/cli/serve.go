@@ -121,10 +121,13 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 
 	capture := capturegrpc.NewCaptureServer(log, version, mgr, store, blobs)
 
-	// Replay engine — HTTP dispatcher for Phase 2a. 2b adds socket / cron.
+	// Replay engine: HTTP + Cron + Socket.io dispatchers. BlobRef bodies are
+	// rehydrated via the blob store during dispatch.
 	replayEngine := replay.NewEngine(
-		log, store, store, meta.Replays(),
+		log, store, store, meta.Replays(), blobs,
 		replay.NewHTTPDispatcher(),
+		replay.NewCronDispatcher(log),
+		replay.NewSocketIODispatcher(log),
 	)
 	replayGRPC := capturegrpc.NewReplayServer(log, replayEngine, meta.Replays())
 
