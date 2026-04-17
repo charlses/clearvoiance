@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -15,36 +16,57 @@ import (
 	capturegrpc "github.com/charlses/clearvoiance/engine/internal/api/grpc"
 	pb "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1"
 	"github.com/charlses/clearvoiance/engine/internal/sessions"
+	"github.com/charlses/clearvoiance/engine/internal/storage"
+	chstore "github.com/charlses/clearvoiance/engine/internal/storage/clickhouse"
 )
 
 // Default bind address. Loopback-only by default; operators opt into
 // external exposure via `--grpc-addr 0.0.0.0:9100`.
 const defaultGRPCAddr = "127.0.0.1:9100"
 
+type serveOpts struct {
+	grpcAddr      string
+	clickhouseDSN string
+}
+
 func newServeCmd(log *slog.Logger, version string) *cobra.Command {
-	var grpcAddr string
+	var opts serveOpts
 
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the clearvoiance engine (gRPC Capture service).",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runServe(cmd.Context(), log, version, grpcAddr)
+			return runServe(cmd.Context(), log, version, opts)
 		},
 	}
 
-	cmd.Flags().StringVar(&grpcAddr, "grpc-addr", defaultGRPCAddr,
+	cmd.Flags().StringVar(&opts.grpcAddr, "grpc-addr", defaultGRPCAddr,
 		"Address the gRPC Capture service listens on.")
+
+	// CLI flag wins; env var is the default for container deployments.
+	cmd.Flags().StringVar(&opts.clickhouseDSN, "clickhouse-dsn",
+		os.Getenv("CLEARVOIANCE_CLICKHOUSE_DSN"),
+		"ClickHouse DSN, e.g. clickhouse://default:dev@localhost:9000/clearvoiance. "+
+			"Leave empty to run in ephemeral (noop storage) mode.")
+
 	return cmd
 }
 
-func runServe(ctx context.Context, log *slog.Logger, version, grpcAddr string) error {
+func runServe(ctx context.Context, log *slog.Logger, version string, opts serveOpts) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	mgr := sessions.NewManager()
-	capture := capturegrpc.NewCaptureServer(log, version, mgr)
 
-	lis, err := net.Listen("tcp", grpcAddr)
+	store, err := openStore(ctx, log, opts.clickhouseDSN)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	capture := capturegrpc.NewCaptureServer(log, version, mgr, store)
+
+	lis, err := net.Listen("tcp", opts.grpcAddr)
 	if err != nil {
 		return err
 	}
@@ -54,7 +76,7 @@ func runServe(ctx context.Context, log *slog.Logger, version, grpcAddr string) e
 	// Reflection lets us poke the server with grpcurl during development.
 	reflection.Register(srv)
 
-	log.Info("engine listening", "addr", grpcAddr, "version", version)
+	log.Info("engine listening", "addr", opts.grpcAddr, "version", version)
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -83,4 +105,27 @@ func runServe(ctx context.Context, log *slog.Logger, version, grpcAddr string) e
 	}
 
 	return nil
+}
+
+// openStore returns a ClickHouse store when a DSN is provided, or a Noop store
+// otherwise. Ephemeral mode exists for dev smoke tests; production deployments
+// must set a DSN.
+func openStore(ctx context.Context, log *slog.Logger, dsn string) (storage.EventStore, error) {
+	if dsn == "" {
+		log.Warn("no --clickhouse-dsn set — events will be acked but not persisted (ephemeral mode)")
+		return storage.Noop{}, nil
+	}
+	log.Info("connecting to ClickHouse", "dsn_host", redactDSN(dsn))
+	return chstore.Open(ctx, dsn)
+}
+
+// redactDSN trims credentials from a DSN for safe logging.
+func redactDSN(dsn string) string {
+	// Good enough: drop everything before the last '@'.
+	for i := len(dsn) - 1; i >= 0; i-- {
+		if dsn[i] == '@' {
+			return "***@" + dsn[i+1:]
+		}
+	}
+	return dsn
 }

@@ -16,6 +16,7 @@ import (
 
 	pb "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1"
 	"github.com/charlses/clearvoiance/engine/internal/sessions"
+	"github.com/charlses/clearvoiance/engine/internal/storage"
 )
 
 // serverVersion is stamped into HandshakeAck; filled by the caller.
@@ -25,20 +26,21 @@ const (
 	defaultFlushIntervalMs    int64 = 100
 )
 
-// CaptureServer implements pb.CaptureServiceServer backed by an in-memory
-// session manager. Phase 1a scope: events are acked but not persisted —
-// the ClickHouse writer lands in Phase 1b.
+// CaptureServer implements pb.CaptureServiceServer. The session manager tracks
+// lifecycle + counters; the store persists event batches before they are acked.
 type CaptureServer struct {
 	pb.UnimplementedCaptureServiceServer
 
 	log     *slog.Logger
 	version string
 	mgr     *sessions.Manager
+	store   storage.EventStore
 }
 
-// NewCaptureServer wires a CaptureServer against a session manager.
-func NewCaptureServer(log *slog.Logger, version string, mgr *sessions.Manager) *CaptureServer {
-	return &CaptureServer{log: log, version: version, mgr: mgr}
+// NewCaptureServer wires a CaptureServer against a session manager and an
+// EventStore. Pass storage.Noop{} for in-memory dev smoke tests.
+func NewCaptureServer(log *slog.Logger, version string, mgr *sessions.Manager, store storage.EventStore) *CaptureServer {
+	return &CaptureServer{log: log, version: version, mgr: mgr, store: store}
 }
 
 // StartSession opens a new capture window.
@@ -154,9 +156,22 @@ func (s *CaptureServer) StreamEvents(stream pb.CaptureService_StreamEventsServer
 			for _, ev := range events {
 				bytes += int64(proto.Size(ev))
 			}
+
+			// Persist BEFORE acking. An ack means "we've accepted responsibility for
+			// these events"; acking before write-through would let a crash lose them.
+			if err := s.store.InsertBatch(stream.Context(), sess.ID, events); err != nil {
+				s.log.Error("batch insert failed",
+					"session_id", sess.ID,
+					"batch_id", batch.GetBatchId(),
+					"events", len(events),
+					"err", err,
+				)
+				return status.Errorf(codes.Unavailable, "store insert failed: %v", err)
+			}
+
 			s.mgr.RecordEvents(sess.ID, int64(len(events)), bytes)
 
-			s.log.Debug("batch acked",
+			s.log.Debug("batch persisted",
 				"session_id", sess.ID,
 				"batch_id", batch.GetBatchId(),
 				"events", len(events),
