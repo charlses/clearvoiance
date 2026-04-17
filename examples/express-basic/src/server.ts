@@ -58,7 +58,8 @@ async function main(): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
     });
-    const result = await client.stop();
+    // Wait up to 10s for any in-flight blob uploads / sends to complete.
+    const result = await client.stop({ flushTimeoutMs: 10_000 });
     console.log(`✓ session stopped: ${result.eventsCaptured} events captured`);
     process.exit(0);
   };

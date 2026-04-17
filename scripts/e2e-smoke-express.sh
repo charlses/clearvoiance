@@ -151,6 +151,10 @@ curl -fs -X POST "http://127.0.0.1:$APP_PORT/echo" \
   -H 'content-type: application/json' \
   --data-binary "@$LARGE_BODY_FILE" >/dev/null
 
+# Small grace period so res.on('finish') fires + the async IIFE registers
+# with client.track() before we send SIGTERM.
+sleep 1
+
 echo "→ stopping example (flushes session)"
 kill "$(cat "$APP_PID_FILE")" 2>/dev/null || true
 for _ in $(seq 1 80); do
