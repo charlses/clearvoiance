@@ -35,7 +35,11 @@ func newReplayCmd(_ *slog.Logger) *cobra.Command {
 }
 
 func newReplayResultsCmd() *cobra.Command {
-	var topN int
+	var (
+		topN     int
+		withDB   bool
+		onlyDB   bool
+	)
 	cmd := &cobra.Command{
 		Use:   "results <replay-id>",
 		Short: "Aggregate per-endpoint stats (requests, p95, errors) for a replay.",
@@ -45,21 +49,36 @@ func newReplayResultsCmd() *cobra.Command {
 			if dsn == "" {
 				return errors.New("--clickhouse-dsn (or CLEARVOIANCE_CLICKHOUSE_DSN) is required")
 			}
-			rows, summary, err := queryReplayResults(cmd.Context(), dsn, args[0], topN)
-			if err != nil {
-				return err
+			out := map[string]any{"replay_id": args[0]}
+
+			if !onlyDB {
+				rows, summary, err := queryReplayResults(cmd.Context(), dsn, args[0], topN)
+				if err != nil {
+					return err
+				}
+				out["summary"] = summary
+				out["slowest_by_p95"] = rows
 			}
-			out := map[string]any{
-				"replay_id":       args[0],
-				"summary":         summary,
-				"slowest_by_p95":  rows,
+
+			if withDB || onlyDB {
+				dbRows, byEndpoint, err := queryDbObservations(cmd.Context(), dsn, args[0], topN)
+				if err != nil {
+					return fmt.Errorf("db observations: %w", err)
+				}
+				out["db_slowest_by_p95"] = dbRows
+				out["db_by_endpoint"] = byEndpoint
 			}
+
 			enc := json.NewEncoder(cmd.OutOrStdout())
 			enc.SetIndent("", "  ")
 			return enc.Encode(out)
 		},
 	}
 	cmd.Flags().IntVar(&topN, "top", 20, "How many slowest endpoints to show.")
+	cmd.Flags().BoolVar(&withDB, "db", false,
+		"Also include DB observations (slow queries, lock waits, endpoint rollup) from the db-observer.")
+	cmd.Flags().BoolVar(&onlyDB, "only-db", false,
+		"Only include DB observations; skip the replay_events summary.")
 	return cmd
 }
 

@@ -1,14 +1,23 @@
-// Command clearvoiance-observer observes the SUT's database during replay
-// and correlates findings to replay events.
+// Command clearvoiance-observer polls the SUT's Postgres and correlates
+// slow queries / lock waits to the replay events that caused them.
 //
-// Phase 0: stub. Real implementation lands in Phase 4.
-// See plan/14-phase-4-db-observer.md.
+// See plan/14-phase-4-db-observer.md. Run as sidecar or embed in the engine.
 package main
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"os"
+
+	"github.com/charlses/clearvoiance/db-observer/internal/cli"
+)
 
 var version = "0.0.0-dev"
 
 func main() {
-	fmt.Printf("clearvoiance-observer %s (phase 0 stub)\n", version)
+	root := cli.NewRootCmd(version)
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "clearvoiance-observer: %v\n", err)
+		os.Exit(1)
+	}
 }

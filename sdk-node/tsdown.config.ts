@@ -10,6 +10,7 @@ export default defineConfig({
     "adapters/cron/node-cron": "src/adapters/cron/node-cron.ts",
     "outbound/index": "src/outbound/index.ts",
     "hermetic/index": "src/hermetic/index.ts",
+    "db/postgres": "src/db/postgres.ts",
   },
   format: ["esm", "cjs"],
   dts: true,
@@ -24,5 +25,6 @@ export default defineConfig({
     "koa",
     "socket.io",
     "node-cron",
+    "pg",
   ],
 });

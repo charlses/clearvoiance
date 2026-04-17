@@ -1,7 +1,32 @@
 # Phase 4 — DB Observer
 
-**Duration:** 1 week.
+**Status:** Core slice shipped 2026-04-17.
 **Goal:** During replay, observe the SUT's Postgres and surface which **replay events** caused which **DB performance problems** — slow queries, lock contention, deadlocks, long transactions. This is clearvoiance's killer feature vs. load testing tools.
+
+## What landed
+
+- **SDK instrumentor** (`@clearvoiance/node/db/postgres`): `instrumentPg(pool, { replayId? })` hooks `pool.on('connect')` on node-postgres and prepends `SET application_name = 'clv:<replayId?>:<eventId>'` on every query under a capture scope. Sequenced properly so pg@9 doesn't warn about concurrent-query enqueuing. Callback-mode `client.query(text, values, cb)` (used internally by `pool.query`) goes through the same SET → user-query pipeline. Tracked per-connection so the SET is skipped when the event id hasn't changed. Supports an optional `replayId` for concurrent-replay disambiguation.
+- **Observer binary** (`db-observer/`): `clearvoiance-observer run` polls `pg_stat_activity` every 100ms (configurable) for rows whose `application_name` matches `clv:*`, parses `{replayId, eventId}` out, and emits `Observation{type: slow_query | lock_wait, durationNs, queryFingerprint, queryText, ...}` records to a pluggable Sink. Debouncing keeps one emission per in-flight query — so a 5s slow query emits exactly one row, not 50 (one per poll).
+- **Sinks**: `ClickHouseSink` batches into the `db_observations` MergeTree table (schema defined side-by-side in `sink/clickhouse.go` and `engine/internal/storage/clickhouse/schema.sql` so either side can bootstrap). `Stdout` sink for NDJSON dev loops. `Memory` sink for tests.
+- **Engine CLI**: `clearvoiance replay results <id> --db` (and `--only-db`) joins `db_observations` against `events` to show (a) top slow queries by p95 + query fingerprint, (b) per-endpoint DB-time rollup ("which endpoint caused the most DB time").
+- **Engine schema**: `db_observations` table auto-migrated by the engine alongside `events` and `replay_events`, so standing up the engine is enough for the observer to land its writes.
+
+## Acceptance criteria tested live
+
+Verified via integration tests (all green, Docker + testcontainers):
+
+1. **SDK → real Postgres** (`sdk-node/src/db/postgres.integration.test.ts`, 3 tests): `instrumentPg` pins `application_name` correctly while a query is in-flight, including the `clv:<replayId>:<eventId>` form; no `clv:` names leak when outside a capture scope.
+2. **Observer → real Postgres** (`db-observer/internal/observer/observer_test.go`, 3 tests): emits exactly one slow-query observation per in-flight query, correctly parses event ids out of `application_name`, ignores non-clv apps.
+3. **Sink → real ClickHouse** (`db-observer/internal/sink/clickhouse_test.go`): Observations round-trip through the `db_observations` schema with correct column types.
+4. **Full chain** (`db-observer/internal/observer/e2e_test.go`): real PG + SDK-style app_name + observer + CH sink + read back → asserts event_id, replay_id, type, and duration all match.
+
+## Explicitly deferred
+
+- **Log-tail parser** (`log_min_duration_statement` output). Needed for precise query timing on managed Postgres (RDS/Cloud SQL) where `pg_stat_activity` is sampled. `pg_stat_statements` diff mode as alternative. Follow-up slice.
+- **`auto_explain` integration.** JSON EXPLAIN plans attached to observations. Requires the observer to enable the extension at replay start; polish item.
+- **`pg_locks` snapshot on deadlock.** Full lock-graph visualization. Emit basic lock-wait rows today; deadlock-graph is a follow-up.
+- **MySQL / Mongo observers.** Postgres-only for now.
+- **Knex / Prisma / TypeORM instrumentors.** Most sit on pg's Pool so the `instrumentPg` patch catches them; explicit adapters are polish.
 
 ## The correlation trick
 

@@ -49,6 +49,25 @@ PARTITION BY (session_id, toStartOfHour(fromUnixTimestamp64Nano(timestamp_ns)))
 ORDER BY (session_id, timestamp_ns, id)
 SETTINGS index_granularity = 8192;
 
+-- Slow-query / lock-wait observations emitted by the db-observer. Either
+-- the observer creates this table at start-up (sidecar mode) or the engine
+-- creates it here (embedded mode). Both DDLs are idempotent.
+CREATE TABLE IF NOT EXISTS db_observations (
+    observation_id    String,
+    replay_id         String,
+    event_id          String,
+    observation_type  LowCardinality(String),
+    observed_at_ns    Int64,
+    duration_ns       Int64,
+    query_text        String CODEC(ZSTD(6)),
+    query_fingerprint String,
+    wait_event_type   LowCardinality(String),
+    wait_event        String
+) ENGINE = MergeTree()
+PARTITION BY (replay_id)
+ORDER BY (replay_id, event_id, observed_at_ns)
+SETTINGS index_granularity = 8192;
+
 -- Per-event replay results. Written by the replay engine for every dispatched
 -- event so operators can slice latency/lag by endpoint, status, etc.
 CREATE TABLE IF NOT EXISTS replay_events (

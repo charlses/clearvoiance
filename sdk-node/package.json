@@ -104,6 +104,16 @@
         "types": "./dist/hermetic/index.d.cts",
         "default": "./dist/hermetic/index.cjs"
       }
+    },
+    "./db/postgres": {
+      "import": {
+        "types": "./dist/db/postgres.d.mts",
+        "default": "./dist/db/postgres.mjs"
+      },
+      "require": {
+        "types": "./dist/db/postgres.d.cts",
+        "default": "./dist/db/postgres.cjs"
+      }
     }
   },
   "files": [
@@ -116,6 +126,7 @@
     "dev": "tsdown --watch",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:integration": "vitest run -c vitest.integration.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "clean": "rm -rf dist"
@@ -124,13 +135,16 @@
     "node": ">=24"
   },
   "devDependencies": {
+    "@testcontainers/postgresql": "^11.14.0",
     "@types/express": "^5.0.6",
     "@types/koa": "^3.0.2",
     "@types/node": "^25.6.0",
     "@types/node-cron": "^3.0.11",
+    "@types/pg": "^8.20.0",
     "express": "^5.2.1",
     "koa": "^3.2.0",
     "node-cron": "^4.2.1",
+    "pg": "^8.20.0",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "tsdown": "^0.21.9",
@@ -147,6 +161,7 @@
     "express": ">=4.0.0 <6.0.0",
     "koa": ">=2.0.0 <4.0.0",
     "node-cron": ">=3.0.0 <5.0.0",
+    "pg": ">=8.0.0 <9.0.0",
     "socket.io": ">=4.0.0 <5.0.0"
   },
   "peerDependenciesMeta": {
@@ -160,6 +175,9 @@
       "optional": true
     },
     "node-cron": {
+      "optional": true
+    },
+    "pg": {
       "optional": true
     }
   }
