@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1"
+	"github.com/charlses/clearvoiance/engine/internal/storage"
 )
 
 //go:embed schema.sql
@@ -106,6 +107,88 @@ func (s *Store) InsertBatch(ctx context.Context, sessionID string, events []*pb.
 		}
 	}
 
+	return batch.Send()
+}
+
+// ReadSession streams events for a session in chronological order. Callers
+// consume via the returned channel; the error channel receives at most one
+// error and is then closed. Both channels are always closed.
+func (s *Store) ReadSession(ctx context.Context, sessionID string) (<-chan *pb.Event, <-chan error) {
+	events := make(chan *pb.Event, 256)
+	errs := make(chan error, 1)
+
+	go func() {
+		defer close(events)
+		defer close(errs)
+
+		rows, err := s.conn.Query(ctx,
+			`SELECT raw_pb FROM events
+			  WHERE session_id = ?
+			  ORDER BY timestamp_ns ASC, id ASC`,
+			sessionID,
+		)
+		if err != nil {
+			errs <- fmt.Errorf("read session: %w", err)
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var raw string
+			if err := rows.Scan(&raw); err != nil {
+				errs <- fmt.Errorf("scan event: %w", err)
+				return
+			}
+			ev := &pb.Event{}
+			if err := proto.Unmarshal([]byte(raw), ev); err != nil {
+				errs <- fmt.Errorf("unmarshal event: %w", err)
+				return
+			}
+			select {
+			case events <- ev:
+			case <-ctx.Done():
+				errs <- ctx.Err()
+				return
+			}
+		}
+		if err := rows.Err(); err != nil {
+			errs <- err
+		}
+	}()
+
+	return events, errs
+}
+
+// InsertReplayEvents writes a batch of replay results. Shape mirrors the
+// replay_events table; see storage.ReplayResultRow for the canonical type.
+func (s *Store) InsertReplayEvents(ctx context.Context, rows []storage.ReplayResultRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO replay_events")
+	if err != nil {
+		return fmt.Errorf("prepare replay_events batch: %w", err)
+	}
+	for _, r := range rows {
+		if err := batch.Append(
+			r.ReplayID,
+			r.EventID,
+			r.ScheduledFireNs,
+			r.ActualFireNs,
+			r.LagNs,
+			r.ResponseStatus,
+			r.ResponseDurationNs,
+			r.ErrorCode,
+			r.ErrorMessage,
+			r.BytesSent,
+			r.BytesReceived,
+			r.HTTPMethod,
+			r.HTTPPath,
+			r.HTTPRoute,
+		); err != nil {
+			return fmt.Errorf("append replay event: %w", err)
+		}
+	}
 	return batch.Send()
 }
 

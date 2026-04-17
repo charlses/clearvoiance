@@ -15,6 +15,7 @@ import (
 
 	capturegrpc "github.com/charlses/clearvoiance/engine/internal/api/grpc"
 	pb "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1"
+	"github.com/charlses/clearvoiance/engine/internal/replay"
 	"github.com/charlses/clearvoiance/engine/internal/sessions"
 	"github.com/charlses/clearvoiance/engine/internal/storage"
 	"github.com/charlses/clearvoiance/engine/internal/storage/blob"
@@ -120,6 +121,13 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 
 	capture := capturegrpc.NewCaptureServer(log, version, mgr, store, blobs)
 
+	// Replay engine — HTTP dispatcher for Phase 2a. 2b adds socket / cron.
+	replayEngine := replay.NewEngine(
+		log, store, store, meta.Replays(),
+		replay.NewHTTPDispatcher(),
+	)
+	replayGRPC := capturegrpc.NewReplayServer(log, replayEngine, meta.Replays())
+
 	lis, err := net.Listen("tcp", opts.grpcAddr)
 	if err != nil {
 		return err
@@ -127,6 +135,7 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 
 	srv := grpc.NewServer()
 	pb.RegisterCaptureServiceServer(srv, capture)
+	pb.RegisterReplayServiceServer(srv, replayGRPC)
 	// Reflection lets us poke the server with grpcurl during development.
 	reflection.Register(srv)
 

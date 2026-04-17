@@ -50,6 +50,9 @@ func OpenPostgres(ctx context.Context, dsn string) (*Postgres, error) {
 // Sessions returns the sessions surface.
 func (p *Postgres) Sessions() Sessions { return &pgSessions{pool: p.pool} }
 
+// Replays returns the replays surface.
+func (p *Postgres) Replays() Replays { return &pgReplays{pool: p.pool} }
+
 // Close drains the connection pool.
 func (p *Postgres) Close() error {
 	if p.pool != nil {
@@ -171,4 +174,79 @@ func splitStatements(script string) []string {
 		}
 	}
 	return out
+}
+
+// --- replays ---
+
+type pgReplays struct {
+	pool *pgxpool.Pool
+}
+
+func (r *pgReplays) Create(ctx context.Context, row ReplayRow) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO replays
+		   (id, source_session_id, target_url, speedup, label, status, started_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		row.ID, row.SourceSessionID, row.TargetURL, row.Speedup,
+		row.Label, row.Status, row.StartedAt,
+	)
+	return err
+}
+
+func (r *pgReplays) Get(ctx context.Context, id string) (*ReplayRow, error) {
+	row := r.pool.QueryRow(ctx,
+		`SELECT id, source_session_id, target_url, speedup, label, status,
+		        started_at, finished_at, events_dispatched, events_failed,
+		        p50_latency_ms, p95_latency_ms, p99_latency_ms, max_lag_ms,
+		        COALESCE(error_message, '')
+		   FROM replays WHERE id = $1`,
+		id,
+	)
+	var out ReplayRow
+	var finishedAt *time.Time
+	var p50, p95, p99, maxLag *float64
+	err := row.Scan(&out.ID, &out.SourceSessionID, &out.TargetURL, &out.Speedup,
+		&out.Label, &out.Status, &out.StartedAt, &finishedAt,
+		&out.EventsDispatched, &out.EventsFailed,
+		&p50, &p95, &p99, &maxLag, &out.ErrorMessage)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrReplayNotFound
+		}
+		return nil, err
+	}
+	out.FinishedAt = finishedAt
+	out.P50LatencyMs = p50
+	out.P95LatencyMs = p95
+	out.P99LatencyMs = p99
+	out.MaxLagMs = maxLag
+	return &out, nil
+}
+
+func (r *pgReplays) MarkFinished(ctx context.Context, id, status string,
+	finishedAt time.Time, m ReplayMetrics, errorMessage string) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE replays
+		    SET status = $2,
+		        finished_at = $3,
+		        events_dispatched = $4,
+		        events_failed = $5,
+		        p50_latency_ms = $6,
+		        p95_latency_ms = $7,
+		        p99_latency_ms = $8,
+		        max_lag_ms = $9,
+		        error_message = NULLIF($10, '')
+		  WHERE id = $1`,
+		id, status, finishedAt,
+		m.EventsDispatched, m.EventsFailed,
+		m.P50LatencyMs, m.P95LatencyMs, m.P99LatencyMs, m.MaxLagMs,
+		errorMessage,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrReplayNotFound
+	}
+	return nil
 }

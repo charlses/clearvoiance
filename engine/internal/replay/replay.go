@@ -1,0 +1,385 @@
+// Package replay runs a captured session against a target URL at a
+// configurable speedup. Phase 2a ships the HTTP dispatcher; socket.io, cron,
+// queue, auth strategies, and virtual-user mutators land in 2b.
+package replay
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
+	"math"
+	"net/http"
+	"sort"
+	"sync"
+	"time"
+
+	pb "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1"
+	"github.com/charlses/clearvoiance/engine/internal/storage"
+	"github.com/charlses/clearvoiance/engine/internal/storage/metadata"
+)
+
+// EventSource reads events for a session in order.
+type EventSource interface {
+	ReadSession(ctx context.Context, sessionID string) (<-chan *pb.Event, <-chan error)
+}
+
+// ResultSink writes per-event replay results.
+type ResultSink interface {
+	InsertReplayEvents(ctx context.Context, rows []storage.ReplayResultRow) error
+}
+
+// Dispatcher handles one protocol (http, socket.io, cron, …). Phase 2a ships
+// only HTTP; future dispatchers register here without touching the scheduler.
+type Dispatcher interface {
+	Name() string
+	// CanHandle reports whether this dispatcher wants the event.
+	CanHandle(ev *pb.Event) bool
+	// Dispatch fires the event against the target and returns a result. It
+	// should not return an error for "response was 5xx" — that's part of the
+	// result. Errors are for transport-level failures only.
+	Dispatch(ctx context.Context, ev *pb.Event, target *TargetConfig) (DispatchResult, error)
+}
+
+// TargetConfig is what a dispatcher needs to know about where to fire events.
+type TargetConfig struct {
+	BaseURL string
+}
+
+// DispatchResult is the shape each dispatcher returns per event.
+type DispatchResult struct {
+	ResponseStatus     uint16
+	ResponseDurationNs int64
+	BytesSent          uint32
+	BytesReceived      uint32
+	ErrorCode          string
+	ErrorMessage       string
+	// Optional HTTP fields pulled onto replay_events columns for easy slicing.
+	HTTPMethod string
+	HTTPPath   string
+	HTTPRoute  string
+}
+
+// Config configures a single replay run.
+type Config struct {
+	ReplayID        string
+	SourceSessionID string
+	TargetURL       string
+	Speedup         float64
+	Label           string
+	// Optional cap on how many dispatches run in parallel. 0 = unbounded.
+	MaxConcurrency int
+}
+
+// Engine drives a replay end to end.
+type Engine struct {
+	log         *slog.Logger
+	source      EventSource
+	sink        ResultSink
+	replays     metadata.Replays
+	dispatchers []Dispatcher
+}
+
+// NewEngine wires an Engine. Pass at least one Dispatcher (e.g. HTTPDispatcher).
+func NewEngine(
+	log *slog.Logger,
+	source EventSource,
+	sink ResultSink,
+	replays metadata.Replays,
+	dispatchers ...Dispatcher,
+) *Engine {
+	return &Engine{
+		log:         log,
+		source:      source,
+		sink:        sink,
+		replays:     replays,
+		dispatchers: dispatchers,
+	}
+}
+
+// NewReplayID generates a unique replay id.
+func NewReplayID() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		panic(err)
+	}
+	return "rep_" + hex.EncodeToString(buf[:])
+}
+
+// ErrNoDispatcher is returned when no dispatcher can handle an event.
+var ErrNoDispatcher = errors.New("no dispatcher for event")
+
+// Run executes a replay to completion. It:
+//  1. inserts a 'running' row into the replays table
+//  2. reads events from ClickHouse in ts order
+//  3. schedules each event at t0 + (ev.offset / speedup)
+//  4. dispatches via a worker pool
+//  5. batches replay_events writes to ClickHouse
+//  6. writes a terminal 'completed' / 'failed' row with summary metrics
+func (e *Engine) Run(ctx context.Context, cfg Config) error {
+	if cfg.Speedup <= 0 {
+		return fmt.Errorf("speedup must be > 0, got %v", cfg.Speedup)
+	}
+	startedAt := time.Now().UTC()
+
+	if err := e.replays.Create(ctx, metadata.ReplayRow{
+		ID:              cfg.ReplayID,
+		SourceSessionID: cfg.SourceSessionID,
+		TargetURL:       cfg.TargetURL,
+		Speedup:         cfg.Speedup,
+		Label:           cfg.Label,
+		Status:          "running",
+		StartedAt:       startedAt,
+	}); err != nil {
+		return fmt.Errorf("create replay row: %w", err)
+	}
+
+	summary, runErr := e.run(ctx, cfg)
+	finishedAt := time.Now().UTC()
+	status := "completed"
+	errMsg := ""
+	if runErr != nil {
+		status = "failed"
+		errMsg = runErr.Error()
+	}
+	if err := e.replays.MarkFinished(ctx, cfg.ReplayID, status, finishedAt,
+		summary.metrics(), errMsg); err != nil {
+		e.log.Error("mark replay finished", "err", err)
+	}
+	return runErr
+}
+
+// run orchestrates the scheduling + dispatching. Returns summary metrics.
+func (e *Engine) run(ctx context.Context, cfg Config) (*summary, error) {
+	events, errs := e.source.ReadSession(ctx, cfg.SourceSessionID)
+
+	// Prebuffer all events so we can compute the offset baseline reliably.
+	// For very large sessions we'll want a streaming scheduler; good enough
+	// for Phase 2a (captures are typically < 100K events).
+	buffered, err := drainEvents(events, errs)
+	if err != nil {
+		return &summary{}, fmt.Errorf("read events: %w", err)
+	}
+	if len(buffered) == 0 {
+		e.log.Info("replay has no events", "replay_id", cfg.ReplayID)
+		return &summary{}, nil
+	}
+	sort.SliceStable(buffered, func(i, j int) bool {
+		return buffered[i].GetTimestampNs() < buffered[j].GetTimestampNs()
+	})
+
+	baseTimestampNs := buffered[0].GetTimestampNs()
+	replayStart := time.Now()
+	target := &TargetConfig{BaseURL: cfg.TargetURL}
+
+	// Worker pool: bounded if MaxConcurrency > 0, else unbounded.
+	var sem chan struct{}
+	if cfg.MaxConcurrency > 0 {
+		sem = make(chan struct{}, cfg.MaxConcurrency)
+	}
+
+	results := make(chan storage.ReplayResultRow, 1024)
+	writerDone := make(chan error, 1)
+
+	// Background writer: buffers results + flushes periodically.
+	go func() {
+		writerDone <- e.writeResults(ctx, cfg.ReplayID, results)
+	}()
+
+	var wg sync.WaitGroup
+	sum := &summary{}
+
+	for _, ev := range buffered {
+		// Compute wall-clock target fire time.
+		offsetNs := ev.GetTimestampNs() - baseTimestampNs
+		fireAt := replayStart.Add(time.Duration(float64(offsetNs) / cfg.Speedup))
+		sleep := time.Until(fireAt)
+		if sleep > 0 {
+			select {
+			case <-time.After(sleep):
+			case <-ctx.Done():
+				close(results)
+				wg.Wait()
+				<-writerDone
+				return sum, ctx.Err()
+			}
+		}
+		actual := time.Now()
+		lag := actual.Sub(fireAt)
+		scheduledNs := fireAt.UnixNano()
+
+		// Pick a dispatcher.
+		dispatcher := e.dispatcherFor(ev)
+		if dispatcher == nil {
+			sum.recordSkipped()
+			continue
+		}
+
+		wg.Add(1)
+		if sem != nil {
+			sem <- struct{}{}
+		}
+		go func(ev *pb.Event) {
+			defer wg.Done()
+			if sem != nil {
+				defer func() { <-sem }()
+			}
+			res, derr := dispatcher.Dispatch(ctx, ev, target)
+			row := storage.ReplayResultRow{
+				ReplayID:           cfg.ReplayID,
+				EventID:            ev.GetId(),
+				ScheduledFireNs:    scheduledNs,
+				ActualFireNs:       actual.UnixNano(),
+				LagNs:              lag.Nanoseconds(),
+				ResponseStatus:     res.ResponseStatus,
+				ResponseDurationNs: res.ResponseDurationNs,
+				ErrorCode:          res.ErrorCode,
+				ErrorMessage:       res.ErrorMessage,
+				BytesSent:          res.BytesSent,
+				BytesReceived:      res.BytesReceived,
+				HTTPMethod:         res.HTTPMethod,
+				HTTPPath:           res.HTTPPath,
+				HTTPRoute:          res.HTTPRoute,
+			}
+			if derr != nil {
+				row.ErrorCode = "dispatch_error"
+				row.ErrorMessage = derr.Error()
+			}
+			sum.record(row, derr != nil || res.ResponseStatus >= 500)
+			select {
+			case results <- row:
+			case <-ctx.Done():
+			}
+		}(ev)
+	}
+
+	wg.Wait()
+	close(results)
+	if err := <-writerDone; err != nil {
+		return sum, fmt.Errorf("writer: %w", err)
+	}
+	return sum, nil
+}
+
+func (e *Engine) dispatcherFor(ev *pb.Event) Dispatcher {
+	for _, d := range e.dispatchers {
+		if d.CanHandle(ev) {
+			return d
+		}
+	}
+	return nil
+}
+
+// writeResults drains the results channel, batching writes to ClickHouse so
+// we don't do one INSERT per event. Flushes every 128 rows or 500ms.
+func (e *Engine) writeResults(ctx context.Context, _ string, ch <-chan storage.ReplayResultRow) error {
+	const flushSize = 128
+	flushInterval := 500 * time.Millisecond
+
+	buf := make([]storage.ReplayResultRow, 0, flushSize)
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+
+	flush := func() error {
+		if len(buf) == 0 {
+			return nil
+		}
+		if err := e.sink.InsertReplayEvents(ctx, buf); err != nil {
+			return err
+		}
+		buf = buf[:0]
+		return nil
+	}
+
+	for {
+		select {
+		case row, ok := <-ch:
+			if !ok {
+				return flush()
+			}
+			buf = append(buf, row)
+			if len(buf) >= flushSize {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
+		case <-ticker.C:
+			if err := flush(); err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			_ = flush()
+			return ctx.Err()
+		}
+	}
+}
+
+func drainEvents(events <-chan *pb.Event, errs <-chan error) ([]*pb.Event, error) {
+	var out []*pb.Event
+	for ev := range events {
+		out = append(out, ev)
+	}
+	if err := <-errs; err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// summary tracks running numbers for a replay's terminal row.
+type summary struct {
+	mu               sync.Mutex
+	EventsDispatched int64
+	EventsFailed     int64
+	latencies        []int64 // response_duration_ns
+	maxLagNs         int64
+}
+
+func (s *summary) record(row storage.ReplayResultRow, failed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.EventsDispatched++
+	if failed {
+		s.EventsFailed++
+	}
+	s.latencies = append(s.latencies, row.ResponseDurationNs)
+	if row.LagNs > s.maxLagNs {
+		s.maxLagNs = row.LagNs
+	}
+}
+
+func (s *summary) recordSkipped() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.EventsDispatched++
+}
+
+func (s *summary) metrics() metadata.ReplayMetrics {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := metadata.ReplayMetrics{
+		EventsDispatched: s.EventsDispatched,
+		EventsFailed:     s.EventsFailed,
+	}
+	if n := len(s.latencies); n > 0 {
+		sorted := make([]int64, n)
+		copy(sorted, s.latencies)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+		p50 := float64(sorted[n*50/100]) / 1e6
+		p95 := float64(sorted[int(math.Min(float64(n-1), float64(n*95/100)))]) / 1e6
+		p99 := float64(sorted[int(math.Min(float64(n-1), float64(n*99/100)))]) / 1e6
+		out.P50LatencyMs = &p50
+		out.P95LatencyMs = &p95
+		out.P99LatencyMs = &p99
+	}
+	if s.maxLagNs > 0 {
+		maxLag := float64(s.maxLagNs) / 1e6
+		out.MaxLagMs = &maxLag
+	}
+	return out
+}
+
+// helper for tests / other callers that want stdlib-based reqs without pulling
+// http pkg.
+var _ = http.DefaultClient

@@ -48,3 +48,28 @@ ENGINE = MergeTree()
 PARTITION BY (session_id, toStartOfHour(fromUnixTimestamp64Nano(timestamp_ns)))
 ORDER BY (session_id, timestamp_ns, id)
 SETTINGS index_granularity = 8192;
+
+-- Per-event replay results. Written by the replay engine for every dispatched
+-- event so operators can slice latency/lag by endpoint, status, etc.
+CREATE TABLE IF NOT EXISTS replay_events (
+    replay_id            String,
+    event_id             String,
+    scheduled_fire_ns    Int64,
+    actual_fire_ns       Int64,
+    lag_ns               Int64,
+    response_status      UInt16,
+    response_duration_ns Int64,
+    error_code           LowCardinality(String),
+    error_message        String CODEC(ZSTD(6)),
+    bytes_sent           UInt32,
+    bytes_received       UInt32,
+
+    -- Useful slicing dims copied from the source event at dispatch time.
+    http_method          LowCardinality(String),
+    http_path            String,
+    http_route           String
+)
+ENGINE = MergeTree()
+PARTITION BY replay_id
+ORDER BY (replay_id, scheduled_fire_ns, event_id)
+SETTINGS index_granularity = 8192;

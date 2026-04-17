@@ -1,0 +1,57 @@
+// ReplayService — Phase 2a.
+// Reads captured events from a session and replays them against a target URL
+// at a configurable speedup. HTTP dispatcher only in 2a; socket.io + cron +
+// queue + auth strategies + virtual-user mutators land in 2b.
+syntax = "proto3";
+
+package clearvoiance.v1;
+
+service ReplayService {
+  rpc StartReplay(StartReplayRequest) returns (StartReplayResponse);
+  rpc GetReplay(GetReplayRequest) returns (GetReplayResponse);
+  rpc CancelReplay(CancelReplayRequest) returns (CancelReplayResponse);
+}
+
+message StartReplayRequest {
+  string source_session_id = 1;
+  // Base URL the captured HTTP requests are redirected at.
+  // e.g. http://staging.internal:1337
+  string target_url = 2;
+  // Dispatch-rate multiplier. 1.0 = original timing, 12.0 = 12x faster.
+  double speedup = 3;
+  // Optional human label.
+  string label = 4;
+}
+
+message StartReplayResponse {
+  string replay_id = 1;
+  int64 started_at_ns = 2;
+}
+
+message GetReplayRequest {
+  string replay_id = 1;
+}
+
+message GetReplayResponse {
+  string replay_id = 1;
+  string source_session_id = 2;
+  string target_url = 3;
+  double speedup = 4;
+  string status = 5;  // pending | running | completed | failed | cancelled
+  int64 started_at_ns = 6;
+  int64 finished_at_ns = 7;
+  int64 events_dispatched = 8;
+  int64 events_failed = 9;
+  double p50_latency_ms = 10;
+  double p95_latency_ms = 11;
+  double p99_latency_ms = 12;
+  double max_lag_ms = 13;
+}
+
+message CancelReplayRequest {
+  string replay_id = 1;
+}
+
+message CancelReplayResponse {
+  string status = 1;
+}
