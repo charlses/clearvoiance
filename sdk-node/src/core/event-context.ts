@@ -27,6 +27,15 @@ export function currentEventId(): string | undefined {
 }
 
 /**
+ * Runs `fn` outside any active event scope. Useful when you need to make an
+ * HTTP call (e.g. logging to the engine) from inside a scope and must not
+ * trigger outbound capture or hermetic intercept on it.
+ */
+export function runOutsideEvent<T>(fn: () => T): T {
+  return storage.exit(fn);
+}
+
+/**
  * Generates a new event id. UUID-v7-ish: 8-byte big-endian ms timestamp +
  * 8 bytes of randomness, hex-encoded. Timestamp-ordered so ClickHouse reads
  * stay sequential and binary search by time stays cheap.

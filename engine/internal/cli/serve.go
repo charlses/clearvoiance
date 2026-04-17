@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	stdhttp "net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc/reflection"
 
 	capturegrpc "github.com/charlses/clearvoiance/engine/internal/api/grpc"
+	enginehttp "github.com/charlses/clearvoiance/engine/internal/api/http"
 	pb "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1"
 	"github.com/charlses/clearvoiance/engine/internal/replay"
 	"github.com/charlses/clearvoiance/engine/internal/sessions"
@@ -23,12 +25,16 @@ import (
 	"github.com/charlses/clearvoiance/engine/internal/storage/metadata"
 )
 
-// Default bind address. Loopback-only by default; operators opt into
+// Default bind addresses. Loopback-only by default; operators opt into
 // external exposure via `--grpc-addr 0.0.0.0:9100`.
-const defaultGRPCAddr = "127.0.0.1:9100"
+const (
+	defaultGRPCAddr = "127.0.0.1:9100"
+	defaultHTTPAddr = "127.0.0.1:9101"
+)
 
 type serveOpts struct {
 	grpcAddr      string
+	httpAddr      string
 	clickhouseDSN string
 	postgresDSN   string
 
@@ -54,6 +60,8 @@ func newServeCmd(log *slog.Logger, version string) *cobra.Command {
 
 	cmd.Flags().StringVar(&opts.grpcAddr, "grpc-addr", defaultGRPCAddr,
 		"Address the gRPC Capture service listens on.")
+	cmd.Flags().StringVar(&opts.httpAddr, "http-addr", defaultHTTPAddr,
+		"Address the side-channel HTTP surface (healthz + hermetic unmocked log) listens on.")
 
 	// CLI flag wins; env var is the default for container deployments.
 	cmd.Flags().StringVar(&opts.clickhouseDSN, "clickhouse-dsn",
@@ -150,6 +158,21 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 
 	log.Info("engine listening", "addr", opts.grpcAddr, "version", version)
 
+	// Side-channel HTTP server (hermetic unmocked log + healthz). Loopback-
+	// only by default. Shuts down alongside gRPC.
+	httpSrv := &stdhttp.Server{
+		Addr:              opts.httpAddr,
+		Handler:           enginehttp.NewMux(log),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	httpErr := make(chan error, 1)
+	go func() {
+		log.Info("engine http side-channel listening", "addr", opts.httpAddr)
+		if err := httpSrv.ListenAndServe(); err != nil && err != stdhttp.ErrServerClosed {
+			httpErr <- err
+		}
+	}()
+
 	serveErr := make(chan error, 1)
 	go func() {
 		serveErr <- srv.Serve(lis)
@@ -159,6 +182,10 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 	case <-ctx.Done():
 		log.Info("shutdown signal received, draining")
 	case err := <-serveErr:
+		_ = httpSrv.Close()
+		return err
+	case err := <-httpErr:
+		srv.GracefulStop()
 		return err
 	}
 
@@ -168,6 +195,10 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 		srv.GracefulStop()
 		close(done)
 	}()
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = httpSrv.Shutdown(shutCtx)
+	shutCancel()
+
 	select {
 	case <-done:
 		log.Info("engine stopped")

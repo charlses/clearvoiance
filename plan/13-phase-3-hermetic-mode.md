@@ -1,9 +1,25 @@
 # Phase 3 — Hermetic Mode
 
-**Duration:** 1 week.
+**Status:** Shipped 2026-04-17.
 **Goal:** SUT under replay performs **zero real external I/O**. No real emails sent, no real Telegram messages, no real OpenAI charges, no real S3 uploads. Cron fires only from replay events, not from the SUT's own scheduler.
 
 Without this phase, replay is dangerous. Teams won't run it.
+
+## What landed
+
+- SDK outbound capture: `@clearvoiance/node/outbound` — `patchHttp` (http/https.request via CJS createRequire), `patchFetch` (global fetch / undici), `patchOutbound` convenience wrapper.
+- SDK hermetic replay: `@clearvoiance/node/hermetic` — mock store, intercept (http + fetch), cron killer for node-cron, invoke server + express/koa-compatible middleware, `activateHermetic` orchestrator.
+- Engine: `HermeticService.GetMockPack` gRPC streams captured outbounds from ClickHouse with canonical signature; SDK-Go parity locked via golden value tests on both sides.
+- Engine side-channel HTTP (`--http-addr`, default `127.0.0.1:9101`): `/hermetic/unmocked` records unmocked-outbound info for operator review, `/healthz` for readiness probes.
+- `CLEARVOIANCE_HERMETIC=true` env activates everything: mock-pack fetch, intercepts, cron killer, optional invoke server, optional `recordUnmocked` logging.
+- In-process e2e test asserts zero real outbound hits during hermetic replay + strict-policy throws on new SUT outbounds.
+
+## Explicitly deferred
+
+- `patchUndici` as a standalone entry — undici is covered transitively by `patchFetch` (global fetch uses undici internally in Node 22+). Direct `undici.request` users can wait until someone actually needs it.
+- `patchAxios` — axios uses `http.request` in Node, so the http patch catches it. Explicit axios interceptor (for richer retry/error metadata) is a polish item.
+- Multipart fetch bodies — currently serialized as `k=v;...` strings. Proper multipart round-trip is needed for file-upload-heavy SUTs; deferred until someone files it.
+- BullMQ / Agenda / Bree killers — heterogeneous APIs, users register handlers manually via `registerCronHandler`.
 
 ## The model
 

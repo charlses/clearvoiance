@@ -13,4 +13,22 @@ export {
   maybeActivateHermetic,
   fetchMockPack,
   type ActivateOptions,
+  type FullHermeticHandle,
 } from "./client.js";
+export {
+  patchCron,
+  registerCronHandler,
+  cronRegistry,
+  type CronHandler,
+  type CronKillerOptions,
+} from "./cron-killer.js";
+export {
+  startInvokeServer,
+  INVOKE_PATH,
+  type InvokeServerOptions,
+  type InvokeServerHandle,
+} from "./invoke-server.js";
+export {
+  invokeMiddleware,
+  type InvokeMiddlewareOptions,
+} from "./invoke-middleware.js";
