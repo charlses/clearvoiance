@@ -47,6 +47,13 @@ func OpenPostgres(ctx context.Context, dsn string) (*Postgres, error) {
 	return &Postgres{pool: pool}, nil
 }
 
+// Pool exposes the underlying pgxpool for callers that need direct access
+// (e.g. the audit-log writer in api/rest). Returns nil only when Open hasn't
+// run yet. Prefer the typed surfaces (Sessions/Replays/APIKeys) when
+// possible — this exists so new tables don't need their own constructor
+// boilerplate every time.
+func (p *Postgres) Pool() *pgxpool.Pool { return p.pool }
+
 // Sessions returns the sessions surface.
 func (p *Postgres) Sessions() Sessions { return &pgSessions{pool: p.pool} }
 
@@ -370,10 +377,15 @@ func (a *pgAPIKeys) List(ctx context.Context) ([]APIKeyRow, error) {
 	return out, rows.Err()
 }
 
+// Count returns the number of API keys ever provisioned (revoked + active).
+// The auth middleware uses this to decide whether to enforce the key
+// denylist — once ANY key has ever existed, dev-open mode is permanently
+// off. Counting active-only would mean revoking the last key silently
+// re-opens the engine to any Bearer, which is a nasty foot-gun.
 func (a *pgAPIKeys) Count(ctx context.Context) (int64, error) {
 	var n int64
 	err := a.pool.QueryRow(ctx,
-		`SELECT count(*) FROM api_keys WHERE revoked_at IS NULL`,
+		`SELECT count(*) FROM api_keys`,
 	).Scan(&n)
 	return n, err
 }

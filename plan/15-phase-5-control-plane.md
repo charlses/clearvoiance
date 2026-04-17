@@ -1,7 +1,38 @@
 # Phase 5 — Control Plane API
 
-**Duration:** 1 week.
+**Status:** Core slice shipped 2026-04-17.
 **Goal:** Everything the CLI can do, the REST/WebSocket API can do. UI (Phase 6) is built against it. Third-party integrations (CI, Slackbots, etc.) use it.
+
+## What landed
+
+- **chi-based REST router** at `/api/v1/*` on the existing engine HTTP surface (unified with the hermetic unmocked-log endpoint; single port — `--http-addr`, default `127.0.0.1:9101`). Full middleware stack: RequestID, RealIP, panic-recovery, Bearer auth, audit log.
+- **Bearer auth** via `Authorization: Bearer <api_key>`. Dev-open mode active when no API keys have ever been provisioned; once any key exists, auth is permanently enforced. Rotating out every active key does NOT reopen dev-open — a critical fix caught by the integration test (revoking the last key used to silently reset to dev-open).
+- **Endpoints:**
+  - `GET /health`, `GET /ready`, `GET /version` — unauthenticated.
+  - `GET /sessions`, `GET /sessions/{id}`, `POST /sessions/{id}/stop`, `GET /sessions/{id}/stats`.
+  - `POST /replays`, `GET /replays/{id}`, `POST /replays/{id}/cancel`.
+  - `POST /api-keys` (plaintext returned once), `GET /api-keys`, `DELETE /api-keys/{id}`.
+  - `GET /replays/{id}/db/top-slow-queries`, `GET /replays/{id}/db/by-endpoint` — consume the db-observer's `db_observations` table.
+- **OpenAPI 3.1 spec** hand-written in `openapi.yaml`, served at `/api/v1/openapi.yaml` with engine-version substitution. Swagger UI at `/docs` consuming the spec from the CDN bundle (no static assets checked in).
+- **Audit log** — every successful write (POST/PUT/PATCH/DELETE with 2xx/3xx) produces one row in Postgres `audit_log` via a fire-and-forget middleware. Secret-ish fields (token/password/secret/api_key/key) are redacted before persistence. Index on (api_key_id, ts DESC) for per-key audit trails.
+- **WebSocket hub** at `/ws`, in-protocol auth handshake (`{type:auth,api_key:...}` first message), topic subscribe/unsubscribe/ping/pong. `Hub.Publish(topic, payload)` is the engine-internal fan-out point — replay engine / observer / capture can all push updates. Backpressure: slow clients don't block the hub; per-topic drop-count notices are flushed on a 10s ticker.
+
+## Tests (all green)
+
+- **REST unit** (12 tests) — httptest + Noop metadata: auth paths, 404s, happy paths, OpenAPI + Swagger, key create.
+- **REST integration against real Postgres** (3 tests via testcontainers):
+  - `APIKeys_RoundTripAgainstRealPostgres`: create → use → revoke → reject. Found the dev-open-reopens bug.
+  - `Audit_PayloadRedactsSecretFields`: POST /replays with `secret_token` in body; asserts the persisted audit row has `[REDACTED]`.
+  - `Health_IsPublic`: no Bearer needed on `/health`.
+- **WebSocket** (4 tests) — real server, real upgrade: auth handshake required, subscribe→publish→receive, unsubscribe stops delivery, ping/pong.
+
+## Explicitly deferred
+
+- **Event-browser endpoints** (`GET /sessions/{id}/events` paginated browser). ClickHouse scan is straightforward but cursor pagination + filter syntax wants a dedicated slice.
+- **Import / export** (`POST /sessions/import`, `GET /sessions/:id/export`). Streaming tarball over HTTP is a surface-area investment; belongs with the OSS-launch tooling in Phase 8.
+- **CLI refactor to REST.** The CLI still speaks gRPC — fine for v1 since the engine runs both side by side. Swapping to REST under the hood is additive and comes later.
+- **WebSocket topic fan-out from the engine** (`replay.{id}.progress` from the replay engine, `replay.{id}.db` from the observer). The hub exists and is pluggable; actually wiring publishers into the scheduler + observer loops is a polish pass.
+- **Rate limiting** per key. Single global limit via reverse proxy for now.
 
 ## Deliverables
 

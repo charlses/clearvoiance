@@ -57,3 +57,21 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 
 CREATE INDEX IF NOT EXISTS api_keys_revoked_idx ON api_keys (revoked_at);
+
+-- Audit log for every REST API write (POST/PUT/PATCH/DELETE). The middleware
+-- in engine/internal/api/rest/audit.go inserts here after each 2xx/3xx
+-- response. GETs are not audited. Payloads are redacted for secret-ish keys
+-- (token/password/secret/api_key) before persistence.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id           UUID PRIMARY KEY,
+    ts           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    api_key_id   TEXT NOT NULL,
+    action       TEXT NOT NULL,
+    target_type  TEXT NOT NULL,
+    target_id    TEXT,
+    payload      JSONB,
+    source_ip    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS audit_log_ts_idx  ON audit_log (ts DESC);
+CREATE INDEX IF NOT EXISTS audit_log_key_idx ON audit_log (api_key_id, ts DESC);

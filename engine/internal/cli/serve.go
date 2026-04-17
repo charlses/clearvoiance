@@ -14,8 +14,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/go-chi/chi/v5"
+
 	capturegrpc "github.com/charlses/clearvoiance/engine/internal/api/grpc"
 	enginehttp "github.com/charlses/clearvoiance/engine/internal/api/http"
+	"github.com/charlses/clearvoiance/engine/internal/api/rest"
+	"github.com/charlses/clearvoiance/engine/internal/api/ws"
 	pb "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1"
 	"github.com/charlses/clearvoiance/engine/internal/replay"
 	"github.com/charlses/clearvoiance/engine/internal/sessions"
@@ -158,11 +162,35 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 
 	log.Info("engine listening", "addr", opts.grpcAddr, "version", version)
 
-	// Side-channel HTTP server (hermetic unmocked log + healthz). Loopback-
-	// only by default. Shuts down alongside gRPC.
+	// Unified HTTP surface on opts.httpAddr:
+	//   /api/v1/*  — REST control plane
+	//   /ws        — live-view WebSocket hub
+	//   /docs      — Swagger UI
+	//   /hermetic/unmocked — hermetic-mode unmocked outbound log
+	//   /healthz   — bare liveness
+	wsHub := ws.NewHub(log)
+	restDeps := rest.Deps{
+		Log:           log,
+		Version:       version,
+		ClickhouseDSN: opts.clickhouseDSN,
+		SessionMgr:    mgr,
+		EventStore:    store,
+		MetaStore:     meta,
+		ReplayEngine:  replayEngine,
+		AuditLogger:   auditWriter(meta),
+	}
+
+	root := chi.NewRouter()
+	root.Mount("/", rest.Router(restDeps))
+	root.Handle("/hermetic/unmocked", enginehttp.HermeticUnmockedHandler(log))
+	root.Get("/healthz", func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	root.Handle("/ws", ws.Handler(wsHub, meta.APIKeys()))
+
 	httpSrv := &stdhttp.Server{
 		Addr:              opts.httpAddr,
-		Handler:           enginehttp.NewMux(log),
+		Handler:           root,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	httpErr := make(chan error, 1)
@@ -260,6 +288,20 @@ func openMetaStore(ctx context.Context, log *slog.Logger, dsn string) (metadata.
 	}
 	log.Info("connecting to Postgres (metadata)", "dsn_host", redactDSN(dsn))
 	return metadata.OpenPostgres(ctx, dsn)
+}
+
+// auditWriter returns a Postgres-backed audit writer when the metadata store
+// has a real Postgres pool; returns nil (audit disabled) for Noop deploys.
+func auditWriter(meta metadata.Store) rest.AuditWriter {
+	pg, ok := meta.(*metadata.Postgres)
+	if !ok {
+		return nil
+	}
+	pool := pg.Pool()
+	if pool == nil {
+		return nil
+	}
+	return rest.NewPostgresAuditWriter(pool)
 }
 
 // openBlobStore returns an S3-backed blob store when --minio-endpoint is set,

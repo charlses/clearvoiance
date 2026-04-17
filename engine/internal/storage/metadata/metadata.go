@@ -112,9 +112,11 @@ type APIKeys interface {
 	// List returns all keys (including revoked), newest first. Plaintext is
 	// never returned — callers see only metadata.
 	List(ctx context.Context) ([]APIKeyRow, error)
-	// Count returns how many non-revoked keys exist. Used by the gRPC auth
-	// middleware to decide whether to enforce (count>0) or run in dev-open
-	// mode (count=0).
+	// Count returns how many API keys have ever been provisioned (revoked
+	// included). Used by the auth middleware to decide whether to enforce
+	// (count>0) or run in dev-open mode (count=0). Revoking the last key
+	// does NOT re-enable dev-open — once you've turned auth on, it stays
+	// on even if you rotate to zero active keys.
 	Count(ctx context.Context) (int64, error)
 }
 

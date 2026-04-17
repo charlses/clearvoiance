@@ -1,0 +1,319 @@
+openapi: 3.1.0
+info:
+  title: clearvoiance Control Plane
+  description: |
+    REST API for the clearvoiance engine. Everything the CLI does is
+    reachable here, plus DB-observation queries for the UI. See
+    `plan/15-phase-5-control-plane.md` for the design.
+  version: "${ENGINE_VERSION}"
+servers:
+  - url: /api/v1
+    description: Engine HTTP side-channel (loopback by default)
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Sessions
+  - name: Replays
+  - name: DB Observations
+  - name: API Keys
+  - name: Health
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      security: []
+      responses: { "200": { description: ok } }
+
+  /ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe (checks storage reachability)
+      security: []
+      responses:
+        "200": { description: ready }
+        "503": { description: not-ready }
+
+  /version:
+    get:
+      tags: [Health]
+      summary: Engine + SDK compatibility info
+      security: []
+      responses: { "200": { description: ok } }
+
+  /sessions:
+    get:
+      tags: [Sessions]
+      summary: List sessions
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, stopped] }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions: { type: array, items: { $ref: "#/components/schemas/Session" } }
+                  count:    { type: integer }
+
+  /sessions/{id}:
+    get:
+      tags: [Sessions]
+      summary: Get session detail
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/Session" } }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /sessions/{id}/stop:
+    post:
+      tags: [Sessions]
+      summary: Stop an active session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: stopped }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: already stopped }
+
+  /sessions/{id}/stats:
+    get:
+      tags: [Sessions]
+      summary: Session aggregates (counts, timings)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: ok }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /replays:
+    post:
+      tags: [Replays]
+      summary: Start a replay
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StartReplayRequest" }
+      responses:
+        "202":
+          description: accepted
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/StartReplayResponse" } }
+        "400": { description: bad request }
+        "503": { description: replay engine unavailable }
+
+  /replays/{id}:
+    get:
+      tags: [Replays]
+      summary: Get replay status + metrics
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/Replay" } }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /replays/{id}/cancel:
+    post:
+      tags: [Replays]
+      summary: Cancel a running replay
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "202": { description: accepted }
+        "404": { description: not running }
+
+  /replays/{id}/db/top-slow-queries:
+    get:
+      tags: [DB Observations]
+      summary: Top slow queries emitted by the db-observer for this replay
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        "200": { description: ok }
+        "503": { description: DB observer unavailable }
+
+  /replays/{id}/db/by-endpoint:
+    get:
+      tags: [DB Observations]
+      summary: DB time rolled up per endpoint
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        "200": { description: ok }
+        "503": { description: DB observer unavailable }
+
+  /api-keys:
+    post:
+      tags: [API Keys]
+      summary: Create a new API key (plaintext returned ONCE)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/APIKeyCreated" } }
+    get:
+      tags: [API Keys]
+      summary: List provisioned API keys (no plaintext)
+      responses:
+        "200":
+          description: ok
+
+  /api-keys/{id}:
+    delete:
+      tags: [API Keys]
+      summary: Revoke an API key
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: revoked }
+        "404": { description: not found }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: "clv_live_*"
+      description: |
+        `Authorization: Bearer <api_key>`. When no API keys are provisioned
+        the engine runs in dev-open mode — any non-empty Bearer value is
+        accepted. Once at least one key exists, only valid keys work.
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:    { type: string, example: SESSION_NOT_FOUND }
+            message: { type: string }
+            details: { type: object, additionalProperties: true }
+
+    Session:
+      type: object
+      properties:
+        id:              { type: string }
+        name:            { type: string }
+        labels:          { type: object, additionalProperties: { type: string } }
+        status:          { type: string, enum: [active, stopped] }
+        started_at:      { type: string, format: date-time }
+        stopped_at:      { type: string, format: date-time, nullable: true }
+        events_captured: { type: integer }
+        bytes_captured:  { type: integer }
+
+    StartReplayRequest:
+      type: object
+      required: [source_session_id, target_url]
+      properties:
+        source_session_id:      { type: string }
+        target_url:             { type: string }
+        speedup:                { type: number, default: 1 }
+        label:                  { type: string }
+        virtual_users:          { type: integer }
+        http_workers:           { type: integer }
+        target_duration_ms:     { type: integer }
+        window_start_offset_ns: { type: integer }
+        window_end_offset_ns:   { type: integer }
+
+    StartReplayResponse:
+      type: object
+      properties:
+        id:         { type: string, example: rep_abc123 }
+        status:     { type: string, example: pending }
+        started_at: { type: string, format: date-time }
+
+    Replay:
+      type: object
+      properties:
+        id:                    { type: string }
+        source_session_id:     { type: string }
+        target_url:            { type: string }
+        speedup:               { type: number }
+        label:                 { type: string }
+        status:                { type: string, enum: [pending, running, completed, failed, cancelled] }
+        started_at:            { type: string, format: date-time }
+        finished_at:           { type: string, format: date-time, nullable: true }
+        events_dispatched:     { type: integer }
+        events_failed:         { type: integer }
+        events_backpressured:  { type: integer }
+        p50_latency_ms:        { type: number, nullable: true }
+        p95_latency_ms:        { type: number, nullable: true }
+        p99_latency_ms:        { type: number, nullable: true }
+        max_lag_ms:            { type: number, nullable: true }
+        error_message:         { type: string }
+
+    APIKeyCreated:
+      type: object
+      properties:
+        id:         { type: string, format: uuid }
+        name:       { type: string }
+        key:        { type: string, description: "Plaintext — only returned here, never again." }
+        created_at: { type: string, format: date-time }
+        warning:    { type: string }
