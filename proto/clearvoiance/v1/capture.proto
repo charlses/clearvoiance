@@ -1,0 +1,149 @@
+// Capture is the gRPC service SDKs call to stream captured events to the engine.
+// See plan/04-protocol-spec.md for full wire-protocol semantics.
+syntax = "proto3";
+
+package clearvoiance.v1;
+
+import "clearvoiance/v1/event.proto";
+
+service CaptureService {
+  // Bidirectional stream: SDK pushes event batches, engine acks in batches
+  // and can send backpressure notices or fatal errors.
+  rpc StreamEvents(stream StreamEventsRequest) returns (stream StreamEventsResponse);
+
+  // Request a presigned URL for large blob uploads.
+  rpc GetBlobUploadURL(GetBlobUploadURLRequest) returns (GetBlobUploadURLResponse);
+
+  // Session lifecycle.
+  rpc StartSession(StartSessionRequest) returns (StartSessionResponse);
+  rpc StopSession(StopSessionRequest) returns (StopSessionResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+message StreamEventsRequest {
+  oneof msg {
+    Handshake handshake = 1;
+    EventBatch batch = 2;
+    FlushRequest flush = 3;
+  }
+}
+
+message Handshake {
+  string session_id = 1;
+  string sdk_version = 2;
+  string api_key = 3;
+  map<string, string> client_metadata = 4;
+}
+
+message EventBatch {
+  repeated Event events = 1;
+  int64 batch_id = 2;
+}
+
+message FlushRequest {
+  int64 up_to_batch_id = 1;
+}
+
+message StreamEventsResponse {
+  oneof msg {
+    HandshakeAck ack = 1;
+    BatchAck batch_ack = 2;
+    BackpressureNotice backpressure = 3;
+    FatalError error = 4;
+  }
+}
+
+message HandshakeAck {
+  string server_version = 1;
+  int32 max_batch_size = 2;
+  int32 max_events_per_second = 3;
+  int64 recommended_flush_interval_ms = 4;
+}
+
+message BatchAck {
+  int64 batch_id = 1;
+  int32 events_persisted = 2;
+  int32 events_rejected = 3;
+  repeated string rejection_reasons = 4;
+}
+
+message BackpressureNotice {
+  int32 slowdown_factor_percent = 1;
+  string reason = 2;
+}
+
+message FatalError {
+  string code = 1;
+  string message = 2;
+}
+
+message GetBlobUploadURLRequest {
+  string session_id = 1;
+  string sha256 = 2;
+  int64 size_bytes = 3;
+  string content_type = 4;
+}
+
+message GetBlobUploadURLResponse {
+  string upload_url = 1;
+  string bucket = 2;
+  string key = 3;
+  map<string, string> required_headers = 4;
+  int64 expires_at_ns = 5;
+}
+
+message StartSessionRequest {
+  string name = 1;
+  string api_key = 2;
+  map<string, string> labels = 3;
+  SessionConfig config = 4;
+}
+
+message SessionConfig {
+  repeated string captured_event_types = 1;
+  RedactionConfig redaction = 2;
+  int64 max_body_inline_bytes = 3;
+  double sample_rate = 4;
+}
+
+message RedactionConfig {
+  repeated string denied_headers = 1;
+  repeated string denied_jsonpaths = 2;
+  bool redact_authorization = 3;
+  bool redact_cookies = 4;
+}
+
+message StartSessionResponse {
+  string session_id = 1;
+  int64 started_at_ns = 2;
+}
+
+message StopSessionRequest {
+  string session_id = 1;
+  string api_key = 2;
+}
+
+message StopSessionResponse {
+  int64 stopped_at_ns = 1;
+  int64 events_captured = 2;
+  int64 bytes_captured = 3;
+}
+
+message HeartbeatRequest {
+  string session_id = 1;
+  string api_key = 2;
+  ClientHealth health = 3;
+}
+
+message ClientHealth {
+  int64 events_buffered = 1;
+  int64 events_dropped = 2;
+  int64 bytes_buffered = 3;
+  double cpu_percent = 4;
+  int64 memory_bytes = 5;
+}
+
+message HeartbeatResponse {
+  bool session_active = 1;
+  BackpressureNotice backpressure = 2;
+}

@@ -1,0 +1,26 @@
+# Normalize line endings for all text files
+* text=auto eol=lf
+
+# Go
+*.go text eol=lf
+
+# Shell scripts
+*.sh text eol=lf
+
+# Binary files — never touch
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+
+# Generated code — hide from PR diffs on GitHub
+sdk-node/src/generated/** linguist-generated=true
+engine/internal/pb/** linguist-generated=true
+
+# Docs — count for language stats only if you want; hide for now
+docs/** linguist-documentation=true
+plan/** linguist-documentation=true

@@ -1,0 +1,174 @@
+// Canonical event format for clearvoiance captures.
+// Every captured input to the SUT — HTTP, socket, cron, webhook, queue, outbound —
+// serializes to an Event envelope with a protocol-specific payload.
+//
+// See plan/03-event-schema.md for full design rationale.
+syntax = "proto3";
+
+package clearvoiance.v1;
+
+// Event is the canonical capture record.
+message Event {
+  // Unique event identifier (UUID v7 — timestamp-ordered).
+  string id = 1;
+
+  // Session this event belongs to.
+  string session_id = 2;
+
+  // Nanoseconds since Unix epoch. Monotonic within a session.
+  int64 timestamp_ns = 3;
+
+  // Nanoseconds since session start. Used by the replay scheduler.
+  int64 offset_ns = 4;
+
+  // Adapter that captured this event (e.g. "http.express", "socket.io").
+  string adapter = 5;
+
+  // SDK version (e.g. "@clearvoiance/node@0.1.0").
+  string sdk_version = 6;
+
+  // Arbitrary metadata from enrichers (user_id, tenant_id, trace_id, ...).
+  map<string, string> metadata = 7;
+
+  // Redaction applied to this event, if any (names only, no values).
+  repeated string redactions_applied = 8;
+
+  // Protocol-specific payload.
+  oneof payload {
+    HttpEvent http = 20;
+    SocketEvent socket = 21;
+    CronEvent cron = 22;
+    WebhookEvent webhook = 23;
+    QueueEvent queue = 24;
+    OutboundEvent outbound = 25;
+    DbObservationEvent db = 26;
+  }
+}
+
+// HttpEvent captures an inbound HTTP request + response.
+message HttpEvent {
+  string method = 1;
+  string path = 2;
+  string http_version = 3;
+  map<string, HeaderValues> headers = 4;
+  Body request_body = 5;
+  int32 status = 6;
+  map<string, HeaderValues> response_headers = 7;
+  Body response_body = 8;
+  int64 duration_ns = 9;
+  string source_ip = 10;
+  string user_id = 11;
+  string route_template = 12;
+}
+
+// SocketEvent captures a single WebSocket / Socket.io operation.
+message SocketEvent {
+  enum SocketOp {
+    SOCKET_OP_UNSPECIFIED = 0;
+    SOCKET_OP_CONNECT = 1;
+    SOCKET_OP_DISCONNECT = 2;
+    SOCKET_OP_EMIT_TO_CLIENT = 3;
+    SOCKET_OP_RECV_FROM_CLIENT = 4;
+    SOCKET_OP_JOIN_ROOM = 5;
+    SOCKET_OP_LEAVE_ROOM = 6;
+    SOCKET_OP_ERROR = 7;
+  }
+
+  string socket_id = 1;
+  SocketOp op = 2;
+  string namespace = 3;
+  string event_name = 4;
+  Body data = 5;
+  map<string, string> handshake = 6;
+  string user_id = 7;
+  int64 duration_ns = 8;
+}
+
+// CronEvent captures a scheduled job invocation.
+message CronEvent {
+  string job_name = 1;
+  string scheduler = 2;
+  Body args = 3;
+  int64 duration_ns = 4;
+  string status = 5;
+  string error_message = 6;
+  string trigger_source = 7;
+}
+
+// WebhookEvent captures an inbound webhook.
+message WebhookEvent {
+  string provider = 1;
+  string event_type = 2;
+  HttpEvent http = 3;
+  string signature_header = 4;
+}
+
+// QueueEvent captures a consumed message from a queue.
+message QueueEvent {
+  string queue_name = 1;
+  string broker = 2;
+  string message_id = 3;
+  Body payload = 4;
+  int32 retry_count = 5;
+  int64 duration_ns = 6;
+  string status = 7;
+  map<string, string> headers = 8;
+}
+
+// OutboundEvent captures an outbound request FROM the SUT.
+// Recorded during capture; replayed from a mock pack during hermetic replay.
+message OutboundEvent {
+  string target = 1;
+  HttpEvent http = 2;
+  string caused_by_event_id = 3;
+  bytes response_hash = 4;
+}
+
+// DbObservationEvent is emitted by the DB observer, not the SDK.
+message DbObservationEvent {
+  enum DbObservationType {
+    DB_OBSERVATION_TYPE_UNSPECIFIED = 0;
+    DB_OBSERVATION_TYPE_SLOW_QUERY = 1;
+    DB_OBSERVATION_TYPE_LOCK_WAIT = 2;
+    DB_OBSERVATION_TYPE_DEADLOCK = 3;
+    DB_OBSERVATION_TYPE_LONG_TRANSACTION = 4;
+  }
+
+  string query_fingerprint = 1;
+  string query_text = 2;
+  int64 duration_ns = 3;
+  int64 rows_affected = 4;
+  string application_name = 5;
+  string caused_by_event_id = 6;
+  DbObservationType observation_type = 7;
+  string explain_plan = 8;
+  repeated LockInfo locks = 9;
+}
+
+message LockInfo {
+  string relation = 1;
+  string lock_mode = 2;
+  int64 wait_duration_ns = 3;
+  string granted = 4;
+}
+
+// Body represents a payload that may be inline or blob-ref'd.
+message Body {
+  oneof data {
+    bytes inline = 1;
+    BlobRef blob = 2;
+  }
+  string content_type = 3;
+  int64 size_bytes = 4;
+  string encoding = 5;
+}
+
+message BlobRef {
+  string bucket = 1;
+  string key = 2;
+  string sha256 = 3;
+}
+
+message HeaderValues {
+  repeated string values = 1;
+}

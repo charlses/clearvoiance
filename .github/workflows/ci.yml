@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proto-check:
+    name: proto lint + breaking
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: bufbuild/buf-action@v1
+        with:
+          version: 1.68.1
+      - run: buf lint
+        working-directory: proto
+      - name: check for breaking changes vs main
+        if: github.event_name == 'pull_request'
+        run: buf breaking --against '.git#branch=main,subdir=proto'
+        working-directory: proto
+
+  go-check:
+    name: go build + test + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: regenerate proto bindings
+        uses: bufbuild/buf-action@v1
+        with:
+          version: 1.68.1
+      - run: buf generate
+        working-directory: proto
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.60
+          args: --timeout=5m
+
+  sdk-check:
+    name: sdk-node build + test + typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.5.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: regenerate proto bindings
+        uses: bufbuild/buf-action@v1
+        with:
+          version: 1.68.1
+      - run: buf generate
+        working-directory: proto
+      - run: pnpm --filter @clearvoiance/node typecheck
+      - run: pnpm --filter @clearvoiance/node test
+      - run: pnpm --filter @clearvoiance/node build
+
+  ui-check:
+    name: ui build + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.5.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @clearvoiance/ui lint
+      - run: pnpm --filter @clearvoiance/ui build

@@ -1,0 +1,9 @@
+# Default owner — every PR is reviewed by the primary author until the team grows.
+* @charlses
+
+# Proto contracts are load-bearing; same owner, but this line serves as
+# a reminder to scrutinize wire-format changes extra hard.
+/proto/                              @charlses
+
+# Planning / roadmap docs
+/plan/                               @charlses

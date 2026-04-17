@@ -1,0 +1,74 @@
+# Phase 0 docker-compose — provisions the storage backends clearvoiance will need in Phase 1.
+# The engine service is commented out because the CLI doesn't expose `serve` yet
+# (it lands in Phase 1 per plan/11-phase-1-capture-mvp.md).
+#
+# Usage:
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# Everything binds to localhost only — no production exposure.
+
+name: clearvoiance
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8123:8123"  # HTTP
+      - "127.0.0.1:9000:9000"  # Native
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: dev
+      CLICKHOUSE_DB: clearvoiance
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: dev
+      MINIO_ROOT_PASSWORD: devdevdev
+    ports:
+      - "127.0.0.1:9002:9000"  # S3 API
+      - "127.0.0.1:9001:9001"  # Console
+    volumes:
+      - minio_data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: clearvoiance
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: clearvoiance
+    ports:
+      - "127.0.0.1:5499:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # ---- Engine (enable in Phase 1 once `clearvoiance serve` exists) ----
+  # engine:
+  #   build:
+  #     context: ../
+  #     dockerfile: deploy/images/engine/Dockerfile
+  #   depends_on: [clickhouse, minio, postgres]
+  #   environment:
+  #     CLEARVOIANCE_CLICKHOUSE_DSN: clickhouse://default:dev@clickhouse:9000/clearvoiance
+  #     CLEARVOIANCE_MINIO_ENDPOINT: minio:9000
+  #     CLEARVOIANCE_MINIO_ACCESS_KEY: dev
+  #     CLEARVOIANCE_MINIO_SECRET_KEY: devdevdev
+  #     CLEARVOIANCE_POSTGRES_DSN: postgres://clearvoiance:dev@postgres:5432/clearvoiance
+  #   ports:
+  #     - "127.0.0.1:8080:8080"   # REST
+  #     - "127.0.0.1:9100:9100"   # gRPC
+
+volumes:
+  clickhouse_data:
+  minio_data:
+  postgres_data:

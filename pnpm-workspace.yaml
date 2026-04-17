@@ -1,0 +1,4 @@
+packages:
+  - "sdk-node"
+  - "ui"
+  - "examples/*"

@@ -1,0 +1,63 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build outputs
+dist/
+build/
+out/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+bin/
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Node
+.next/
+.turbo/
+*.tsbuildinfo
+.pnpm-debug.log*
+
+# Generated code (regenerate via `just proto`)
+sdk-node/src/generated/
+engine/internal/pb/
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Test artifacts
+/tmp/
+/var/
+
+# Runtime data (WAL, local storage in dev)
+data/
+wal/
+
+# Secrets
+*.pem
+*.key
+!public.key
+*.p12
+*.pfx

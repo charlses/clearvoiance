@@ -1,0 +1,17 @@
+# Tool version pins for clearvoiance.
+# Install everything: `mise install`
+# Docs: https://mise.jdx.dev/
+
+[tools]
+go = "1.22.5"
+node = "20.15.0"
+pnpm = "9.5.0"
+just = "1.34.0"
+buf = "1.68.1"
+
+# protoc plugins (Go) — installed on first `just proto`
+# protoc-gen-go and protoc-gen-go-grpc are Go binaries; install via `go install`.
+
+[env]
+# Make pnpm + Go binaries available without extra config.
+CLEARVOIANCE_ROOT = "{{config_root}}"

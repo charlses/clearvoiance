@@ -1,0 +1,30 @@
+version: v2
+
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/charlses/clearvoiance/engine/internal/pb
+
+plugins:
+  # Go protobuf messages
+  - remote: buf.build/protocolbuffers/go:v1.34.2
+    out: ../engine/internal/pb
+    opt:
+      - paths=source_relative
+
+  # Go gRPC service stubs
+  - remote: buf.build/grpc/go:v1.5.1
+    out: ../engine/internal/pb
+    opt:
+      - paths=source_relative
+
+  # TypeScript — ts-proto generates idiomatic TS types + @grpc/grpc-js service stubs.
+  - remote: buf.build/community/stephenh-ts-proto:v2.11.6
+    out: ../sdk-node/src/generated
+    opt:
+      - outputServices=grpc-js
+      - esModuleInterop=true
+      - env=node
+      - useOptionals=messages
+      - unrecognizedEnum=false

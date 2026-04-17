@@ -1,0 +1,57 @@
+{
+  "name": "@clearvoiance/node",
+  "version": "0.0.0-alpha.0",
+  "description": "Node.js SDK for clearvoiance — capture traffic from your backend and replay it at N× speed.",
+  "license": "Apache-2.0",
+  "author": "Davit Tavadze",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/charlses/clearvoiance.git",
+    "directory": "sdk-node"
+  },
+  "homepage": "https://github.com/charlses/clearvoiance/tree/main/sdk-node",
+  "bugs": {
+    "url": "https://github.com/charlses/clearvoiance/issues"
+  },
+  "keywords": [
+    "clearvoiance",
+    "load-testing",
+    "stress-testing",
+    "traffic-replay",
+    "observability"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "tsup": "^8.1.0",
+    "typescript": "^5.5.3",
+    "vitest": "^2.0.3"
+  }
+}
