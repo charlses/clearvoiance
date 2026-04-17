@@ -55,6 +55,7 @@ func (s *ReplayServer) StartReplay(ctx context.Context, req *pb.StartReplayReque
 		WindowStartNs:    req.GetWindowStartOffsetNs(),
 		WindowEndNs:      req.GetWindowEndOffsetNs(),
 		TargetDurationMs: req.GetTargetDurationMs(),
+		MaxConcurrency:   int(req.GetHttpWorkers()),
 	}
 
 	// Run in a background goroutine — don't block the RPC on the replay.
@@ -91,14 +92,15 @@ func (s *ReplayServer) GetReplay(ctx context.Context, req *pb.GetReplayRequest) 
 	}
 
 	out := &pb.GetReplayResponse{
-		ReplayId:         row.ID,
-		SourceSessionId:  row.SourceSessionID,
-		TargetUrl:        row.TargetURL,
-		Speedup:          row.Speedup,
-		Status:           row.Status,
-		StartedAtNs:      row.StartedAt.UnixNano(),
-		EventsDispatched: row.EventsDispatched,
-		EventsFailed:     row.EventsFailed,
+		ReplayId:            row.ID,
+		SourceSessionId:     row.SourceSessionID,
+		TargetUrl:           row.TargetURL,
+		Speedup:             row.Speedup,
+		Status:              row.Status,
+		StartedAtNs:         row.StartedAt.UnixNano(),
+		EventsDispatched:    row.EventsDispatched,
+		EventsFailed:        row.EventsFailed,
+		EventsBackpressured: row.EventsBackpressured,
 	}
 	if row.FinishedAt != nil {
 		out.FinishedAtNs = row.FinishedAt.UnixNano()

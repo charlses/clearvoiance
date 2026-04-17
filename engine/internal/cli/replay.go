@@ -23,10 +23,43 @@ func newReplayCmd(_ *slog.Logger) *cobra.Command {
 	}
 	cmd.PersistentFlags().String("engine", "127.0.0.1:9100", "Engine gRPC address.")
 	cmd.PersistentFlags().String("api-key", "dev",
-		"API key. Phase 1 accepts any non-empty value; real auth lands in Phase 5.")
+		"API key. Dev-open mode when no api_keys are provisioned yet.")
+	cmd.PersistentFlags().String("clickhouse-dsn",
+		os.Getenv("CLEARVOIANCE_CLICKHOUSE_DSN"),
+		"ClickHouse DSN — used by `results` to aggregate replay_events.")
 
 	cmd.AddCommand(newReplayStartCmd())
 	cmd.AddCommand(newReplayStatusCmd())
+	cmd.AddCommand(newReplayResultsCmd())
+	return cmd
+}
+
+func newReplayResultsCmd() *cobra.Command {
+	var topN int
+	cmd := &cobra.Command{
+		Use:   "results <replay-id>",
+		Short: "Aggregate per-endpoint stats (requests, p95, errors) for a replay.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dsn, _ := cmd.Flags().GetString("clickhouse-dsn")
+			if dsn == "" {
+				return errors.New("--clickhouse-dsn (or CLEARVOIANCE_CLICKHOUSE_DSN) is required")
+			}
+			rows, summary, err := queryReplayResults(cmd.Context(), dsn, args[0], topN)
+			if err != nil {
+				return err
+			}
+			out := map[string]any{
+				"replay_id":       args[0],
+				"summary":         summary,
+				"slowest_by_p95":  rows,
+			}
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(out)
+		},
+	}
+	cmd.Flags().IntVar(&topN, "top", 20, "How many slowest endpoints to show.")
 	return cmd
 }
 
@@ -53,6 +86,7 @@ func newReplayStartCmd() *cobra.Command {
 		fromStr     string
 		toStr       string
 		durationStr string
+		httpWorkers int32
 	)
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -109,6 +143,7 @@ func newReplayStartCmd() *cobra.Command {
 				WindowStartOffsetNs: fromNs,
 				WindowEndOffsetNs:   toNs,
 				TargetDurationMs:    durationMs,
+				HttpWorkers:         httpWorkers,
 			})
 			if err != nil {
 				return err
@@ -154,6 +189,8 @@ func newReplayStartCmd() *cobra.Command {
 		"End of replay window as offset from session start. Default: session end.")
 	cmd.Flags().StringVar(&durationStr, "duration", "",
 		"Target wall-clock duration for the filtered window (e.g. '5m'). When set, overrides --speedup.")
+	cmd.Flags().Int32Var(&httpWorkers, "http-workers", 0,
+		"Cap on concurrent in-flight dispatches. 0 = unbounded. Past cap, events are marked backpressured.")
 	return cmd
 }
 

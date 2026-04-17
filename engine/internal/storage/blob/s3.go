@@ -85,12 +85,30 @@ func OpenS3(cfg S3Config) (*S3, error) {
 }
 
 // PresignPut returns a PUT URL for the session-scoped, sha256-keyed object.
+// Performs a HEAD first so SDKs can skip re-uploading bodies that already
+// exist (natural dedup: same sha256 → same key). The `already_exists` field
+// on the returned result lets the SDK know.
 func (s *S3) PresignPut(ctx context.Context, req PresignPutRequest) (*PresignPutResult, error) {
 	if req.SessionID == "" || req.SHA256 == "" {
 		return nil, fmt.Errorf("blob: session_id and sha256 are required")
 	}
 
 	key := path.Join("sessions", req.SessionID, "blobs", req.SHA256)
+
+	// Dedup check. A successful HEAD means the blob is already uploaded for
+	// this session + sha256 combo; return an AlreadyExists result with an
+	// empty upload URL so the SDK skips the PUT entirely.
+	if _, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}); err == nil {
+		return &PresignPutResult{
+			Bucket:        s.bucket,
+			Key:           key,
+			AlreadyExists: true,
+		}, nil
+	}
+	// Any HEAD error (including 404) falls through to presign a fresh upload.
 	putInput := &s3.PutObjectInput{
 		Bucket:        aws.String(s.bucket),
 		Key:           aws.String(key),

@@ -222,6 +222,36 @@ func (m *Manager) RecordEvents(id string, count, bytes int64) bool {
 	return true
 }
 
+// TouchHeartbeat refreshes the session's last_heartbeat_at in the persistent
+// store. In-memory state doesn't need updating — only the sweeper cares, and
+// the sweeper reads Postgres.
+func (m *Manager) TouchHeartbeat(ctx context.Context, id string) error {
+	return m.store.Heartbeat(ctx, id)
+}
+
+// SweepIdle delegates to the metadata store's sweeper. Sessions closed by
+// the sweeper are removed from the in-memory map too so subsequent ops don't
+// see stale state.
+func (m *Manager) SweepIdle(ctx context.Context, idle time.Duration) ([]string, error) {
+	closed, err := m.store.SweepIdle(ctx, idle)
+	if err != nil {
+		return nil, err
+	}
+	if len(closed) > 0 {
+		m.mu.Lock()
+		for _, id := range closed {
+			if s, ok := m.sessions[id]; ok {
+				s.Status = StatusStopped
+				if s.StoppedAt.IsZero() {
+					s.StoppedAt = time.Now().UTC()
+				}
+			}
+		}
+		m.mu.Unlock()
+	}
+	return closed, nil
+}
+
 func newID() string {
 	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {

@@ -119,7 +119,11 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 	}
 	defer func() { _ = blobs.Close() }()
 
-	capture := capturegrpc.NewCaptureServer(log, version, mgr, store, blobs)
+	capture := capturegrpc.NewCaptureServer(log, version, mgr, store, blobs, meta.APIKeys())
+
+	// Auto-close sessions that haven't heartbeated in 5 minutes. Runs in the
+	// background as long as serve() is running; halts on ctx.Done().
+	go sweepIdleSessions(ctx, log, mgr)
 
 	// Replay engine: HTTP + Cron + Socket.io dispatchers. BlobRef bodies are
 	// rehydrated via the blob store during dispatch.
@@ -183,6 +187,34 @@ func openStore(ctx context.Context, log *slog.Logger, dsn string) (storage.Event
 	}
 	log.Info("connecting to ClickHouse", "dsn_host", redactDSN(dsn))
 	return chstore.Open(ctx, dsn)
+}
+
+// sweepIdleSessions runs every minute, auto-closing sessions that haven't
+// heartbeated in 5 minutes. Stops when ctx is cancelled.
+func sweepIdleSessions(ctx context.Context, log *slog.Logger, mgr *sessions.Manager) {
+	const idle = 5 * time.Minute
+	tick := time.NewTicker(1 * time.Minute)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			closeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			ids, err := mgr.SweepIdle(closeCtx, idle)
+			cancel()
+			if err != nil {
+				log.Warn("sweep idle sessions", "err", err)
+				continue
+			}
+			if len(ids) > 0 {
+				log.Info("auto-closed idle sessions",
+					"count", len(ids),
+					"idle", idle,
+				)
+			}
+		}
+	}
 }
 
 // openMetaStore returns a Postgres-backed metadata store when a DSN is

@@ -22,12 +22,15 @@ type PresignPutRequest struct {
 }
 
 // PresignPutResult is what the SDK receives to perform the PUT.
+// When AlreadyExists is true, the object is already uploaded for this
+// session+sha256 combo; UploadURL will be empty and the SDK must skip PUT.
 type PresignPutResult struct {
 	UploadURL       string
 	Bucket          string
 	Key             string
 	RequiredHeaders map[string]string
 	ExpiresAt       time.Time
+	AlreadyExists   bool
 }
 
 // ErrBlobNotConfigured is returned by the Noop store to signal that no blob

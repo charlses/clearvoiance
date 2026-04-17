@@ -105,6 +105,19 @@ func TestS3_PresignPut_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, got.Body.Close())
 	require.Equal(t, payload, read, "fetched body must match uploaded")
+
+	// Dedup: a second PresignPut for the same session+sha256 must now report
+	// AlreadyExists=true and NOT issue a fresh upload URL, so SDKs skip the PUT.
+	dup, err := store.PresignPut(ctx, PresignPutRequest{
+		SessionID:   "sess_test",
+		SHA256:      sha,
+		SizeBytes:   int64(len(payload)),
+		ContentType: "text/plain",
+	})
+	require.NoError(t, err)
+	require.True(t, dup.AlreadyExists, "second PresignPut for same key must set AlreadyExists")
+	require.Empty(t, dup.UploadURL, "AlreadyExists response must not return an upload URL")
+	require.Equal(t, presigned.Key, dup.Key)
 }
 
 func TestS3_PresignPut_RejectsMissingFields(t *testing.T) {

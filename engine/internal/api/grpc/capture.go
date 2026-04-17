@@ -4,6 +4,8 @@ package grpc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +20,7 @@ import (
 	"github.com/charlses/clearvoiance/engine/internal/sessions"
 	"github.com/charlses/clearvoiance/engine/internal/storage"
 	"github.com/charlses/clearvoiance/engine/internal/storage/blob"
+	"github.com/charlses/clearvoiance/engine/internal/storage/metadata"
 )
 
 // serverVersion is stamped into HandshakeAck; filled by the caller.
@@ -38,24 +41,65 @@ type CaptureServer struct {
 	mgr     *sessions.Manager
 	store   storage.EventStore
 	blobs   blob.Store
+	apiKeys metadata.APIKeys
 }
 
 // NewCaptureServer wires a CaptureServer against a session manager, an
-// EventStore, and a blob.Store. Pass storage.Noop{} / blob.Noop{} for dev
-// smoke tests that don't need persistence.
+// EventStore, a blob.Store, and an APIKeys source.
+// Pass metadata.Noop{}.APIKeys() for dev-open mode (any non-empty key).
 func NewCaptureServer(
 	log *slog.Logger,
 	version string,
 	mgr *sessions.Manager,
 	store storage.EventStore,
 	blobs blob.Store,
+	apiKeys metadata.APIKeys,
 ) *CaptureServer {
-	return &CaptureServer{log: log, version: version, mgr: mgr, store: store, blobs: blobs}
+	return &CaptureServer{
+		log: log, version: version, mgr: mgr, store: store, blobs: blobs, apiKeys: apiKeys,
+	}
+}
+
+// authenticate validates an api_key per the APIKeys source. When no keys are
+// provisioned (Count()==0), ANY non-empty key is accepted — this is the
+// dev-open mode so bootstrapping isn't a chicken-and-egg problem.
+func (s *CaptureServer) authenticate(ctx context.Context, apiKey string) error {
+	if apiKey == "" {
+		return status.Error(codes.Unauthenticated, "api_key is required")
+	}
+	count, err := s.apiKeys.Count(ctx)
+	if err != nil {
+		// Failing open on a transient metadata error — capture should keep
+		// flowing. Audit this in production; for v1 this is the pragmatic
+		// default since Postgres hiccups shouldn't break ongoing captures.
+		s.log.Warn("api-keys count failed, allowing through", "err", err)
+		return nil
+	}
+	if count == 0 {
+		return nil
+	}
+	if _, err := s.apiKeys.ValidateHash(ctx, HashAPIKey(apiKey)); err != nil {
+		if errors.Is(err, metadata.ErrAPIKeyNotFound) {
+			return status.Error(codes.Unauthenticated, "invalid api key")
+		}
+		return status.Errorf(codes.Internal, "validate api key: %v", err)
+	}
+	return nil
+}
+
+// HashAPIKey returns the hex sha256 of the plaintext. Stable across runs so
+// the CLI-side `api-keys create` can store the hash and clients can present
+// the plaintext over the wire.
+func HashAPIKey(plaintext string) string {
+	sum := sha256.Sum256([]byte(plaintext))
+	return hex.EncodeToString(sum[:])
 }
 
 // StartSession opens a new capture window.
-// Auth is a Phase 1b concern — for now any caller succeeds.
 func (s *CaptureServer) StartSession(ctx context.Context, req *pb.StartSessionRequest) (*pb.StartSessionResponse, error) {
+	if err := s.authenticate(ctx, req.GetApiKey()); err != nil {
+		return nil, err
+	}
 	if req.GetName() == "" {
 		return nil, status.Error(codes.InvalidArgument, "session name is required")
 	}
@@ -81,6 +125,9 @@ func (s *CaptureServer) StartSession(ctx context.Context, req *pb.StartSessionRe
 
 // StopSession closes a session and returns captured totals.
 func (s *CaptureServer) StopSession(ctx context.Context, req *pb.StopSessionRequest) (*pb.StopSessionResponse, error) {
+	if err := s.authenticate(ctx, req.GetApiKey()); err != nil {
+		return nil, err
+	}
 	sess, err := s.mgr.Stop(ctx, req.GetSessionId())
 	if err != nil {
 		return nil, translateSessionErr(err)
@@ -131,14 +178,24 @@ func (s *CaptureServer) GetBlobUploadURL(ctx context.Context, req *pb.GetBlobUpl
 		Key:             res.Key,
 		RequiredHeaders: res.RequiredHeaders,
 		ExpiresAtNs:     res.ExpiresAt.UnixNano(),
+		AlreadyExists:   res.AlreadyExists,
 	}, nil
 }
 
-// Heartbeat echoes session status. Backpressure is not emitted in Phase 1a.
+// Heartbeat echoes session status AND refreshes last_heartbeat_at so the
+// auto-close sweeper can tell live-but-quiet sessions from abandoned ones.
 func (s *CaptureServer) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
+	if err := s.authenticate(ctx, req.GetApiKey()); err != nil {
+		return nil, err
+	}
 	sess, err := s.mgr.Get(ctx, req.GetSessionId())
 	if err != nil {
 		return nil, translateSessionErr(err)
+	}
+	// Fire-and-log on the metadata bump: a transient Postgres blip shouldn't
+	// fail the RPC the SDK is depending on to stay alive.
+	if err := s.mgr.TouchHeartbeat(ctx, req.GetSessionId()); err != nil {
+		s.log.Warn("heartbeat touch failed", "err", err, "session_id", req.GetSessionId())
 	}
 	return &pb.HeartbeatResponse{
 		SessionActive: sess.Status == sessions.StatusActive,
@@ -156,6 +213,9 @@ func (s *CaptureServer) StreamEvents(stream pb.CaptureService_StreamEventsServer
 	hs := first.GetHandshake()
 	if hs == nil {
 		return status.Error(codes.InvalidArgument, "first message must be a Handshake")
+	}
+	if err := s.authenticate(stream.Context(), hs.GetApiKey()); err != nil {
+		return err
 	}
 
 	sess, err := s.mgr.Get(stream.Context(), hs.GetSessionId())

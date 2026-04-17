@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	pb "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1"
+	"github.com/charlses/clearvoiance/engine/internal/storage/metadata"
 )
 
 // newSessionCmd is the `clearvoiance session ...` subcommand tree. All
@@ -27,11 +29,15 @@ func newSessionCmd(_ *slog.Logger) *cobra.Command {
 	cmd.PersistentFlags().String("engine", "127.0.0.1:9100",
 		"Engine gRPC address.")
 	cmd.PersistentFlags().String("api-key", "dev",
-		"API key. Phase 1 accepts any non-empty value; real auth lands in Phase 5.")
+		"API key. Dev-open mode when no api_keys are provisioned yet.")
+	cmd.PersistentFlags().String("postgres-dsn",
+		os.Getenv("CLEARVOIANCE_POSTGRES_DSN"),
+		"Postgres DSN — used by `list` / `inspect` to read session history directly.")
 
 	cmd.AddCommand(newSessionStartCmd())
 	cmd.AddCommand(newSessionStopCmd())
 	cmd.AddCommand(newSessionListCmd())
+	cmd.AddCommand(newSessionInspectCmd())
 	return cmd
 }
 
@@ -117,15 +123,53 @@ func newSessionStopCmd() *cobra.Command {
 func newSessionListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List sessions the engine currently knows about (Phase 5 adds full history via REST).",
+		Short: "List all sessions recorded in Postgres (newest first).",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// The gRPC Capture service doesn't yet expose a list RPC — that
-			// lands with the REST control plane in Phase 5. For now this is a
-			// stub that emits a helpful pointer.
-			fmt.Fprintln(cmd.OutOrStdout(),
-				"session list is not yet wired — query the Postgres metadata store "+
-					"directly or wait for the REST control plane (Phase 5).")
-			return nil
+			dsn, _ := cmd.Flags().GetString("postgres-dsn")
+			if dsn == "" {
+				return errors.New("--postgres-dsn (or CLEARVOIANCE_POSTGRES_DSN) is required")
+			}
+			pg, err := metadata.OpenPostgres(cmd.Context(), dsn)
+			if err != nil {
+				return err
+			}
+			defer pg.Close()
+
+			rows, err := pg.Sessions().List(cmd.Context())
+			if err != nil {
+				return err
+			}
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(rows)
+		},
+	}
+	return cmd
+}
+
+func newSessionInspectCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "inspect <session-id>",
+		Short: "Show a session's metadata + final counters as JSON.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dsn, _ := cmd.Flags().GetString("postgres-dsn")
+			if dsn == "" {
+				return errors.New("--postgres-dsn (or CLEARVOIANCE_POSTGRES_DSN) is required")
+			}
+			pg, err := metadata.OpenPostgres(cmd.Context(), dsn)
+			if err != nil {
+				return err
+			}
+			defer pg.Close()
+
+			row, err := pg.Sessions().Get(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(row)
 		},
 	}
 	return cmd

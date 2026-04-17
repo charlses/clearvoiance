@@ -44,6 +44,11 @@ message StartReplayRequest {
   // and overrides the `speedup` field. Lets users say "replay this 1h window
   // in 5 minutes" without doing the arithmetic themselves.
   int64 target_duration_ms = 10;
+
+  // Cap on concurrent in-flight HTTP dispatches. 0 = unbounded (default).
+  // Saturation beyond this value is recorded as events_backpressured on the
+  // replay row.
+  int32 http_workers = 11;
 }
 
 // AuthStrategy selects how to rewrite auth credentials on replayed requests.
@@ -132,6 +137,9 @@ message GetReplayResponse {
   double p95_latency_ms = 11;
   double p99_latency_ms = 12;
   double max_lag_ms = 13;
+  // Count of dispatches that had to wait on the worker-pool cap (--http-workers).
+  // A non-zero value means the replay was saturated at that concurrency.
+  int64 events_backpressured = 14;
 }
 
 message CancelReplayRequest {

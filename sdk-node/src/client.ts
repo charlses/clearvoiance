@@ -178,6 +178,7 @@ export class Client {
       bucket: string;
       key: string;
       requiredHeaders: Record<string, string>;
+      alreadyExists: boolean;
     }>((resolve, reject) => {
       this.grpc.getBlobUploadUrl(
         { sessionId, sha256, sizeBytes, contentType },
@@ -188,10 +189,16 @@ export class Client {
             bucket: resp.bucket,
             key: resp.key,
             requiredHeaders: resp.requiredHeaders,
+            alreadyExists: resp.alreadyExists,
           });
         },
       );
     });
+
+    // Engine already has this blob (same session + sha256) → skip the PUT.
+    if (presign.alreadyExists) {
+      return { bucket: presign.bucket, key: presign.key, sha256 };
+    }
 
     const resp = await fetch(presign.uploadUrl, {
       method: "PUT",

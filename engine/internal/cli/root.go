@@ -23,6 +23,7 @@ func Execute(version string) error {
 	root.AddCommand(newServeCmd(log, version))
 	root.AddCommand(newSessionCmd(log))
 	root.AddCommand(newReplayCmd(log))
+	root.AddCommand(newAPIKeysCmd(log))
 
 	if err := root.Execute(); err != nil {
 		log.Error("command failed", "err", err)

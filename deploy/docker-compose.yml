@@ -1,11 +1,12 @@
-# Phase 0 docker-compose — provisions the storage backends clearvoiance will need in Phase 1.
-# The engine service is commented out because the CLI doesn't expose `serve` yet
-# (it lands in Phase 1 per plan/11-phase-1-capture-mvp.md).
+# Full self-host stack for clearvoiance.
 #
 # Usage:
 #   docker compose -f deploy/docker-compose.yml up -d
+#   # SDK clients point at grpc://127.0.0.1:9100
 #
-# Everything binds to localhost only — no production exposure.
+# Bucket `clearvoiance-blobs` is auto-created on first boot via the
+# `minio-bootstrap` one-shot. Everything binds to loopback only — no
+# production exposure without an explicit reverse proxy.
 
 name: clearvoiance
 
@@ -20,6 +21,11 @@ services:
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: dev
       CLICKHOUSE_DB: clearvoiance
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     volumes:
       - clickhouse_data:/var/lib/clickhouse
     ulimits:
@@ -28,7 +34,7 @@ services:
         hard: 262144
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -37,8 +43,25 @@ services:
     ports:
       - "127.0.0.1:9002:9000"  # S3 API
       - "127.0.0.1:9001:9001"  # Console
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     volumes:
       - minio_data:/data
+
+  minio-bootstrap:
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 dev devdevdev &&
+      mc mb -p local/clearvoiance-blobs || true
+      "
+    restart: "no"
 
   postgres:
     image: postgres:16-alpine
@@ -49,24 +72,40 @@ services:
       POSTGRES_DB: clearvoiance
     ports:
       - "127.0.0.1:5499:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "clearvoiance", "-d", "clearvoiance"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  # ---- Engine (enable in Phase 1 once `clearvoiance serve` exists) ----
-  # engine:
-  #   build:
-  #     context: ../
-  #     dockerfile: deploy/images/engine/Dockerfile
-  #   depends_on: [clickhouse, minio, postgres]
-  #   environment:
-  #     CLEARVOIANCE_CLICKHOUSE_DSN: clickhouse://default:dev@clickhouse:9000/clearvoiance
-  #     CLEARVOIANCE_MINIO_ENDPOINT: minio:9000
-  #     CLEARVOIANCE_MINIO_ACCESS_KEY: dev
-  #     CLEARVOIANCE_MINIO_SECRET_KEY: devdevdev
-  #     CLEARVOIANCE_POSTGRES_DSN: postgres://clearvoiance:dev@postgres:5432/clearvoiance
-  #   ports:
-  #     - "127.0.0.1:8080:8080"   # REST
-  #     - "127.0.0.1:9100:9100"   # gRPC
+  engine:
+    build:
+      context: ../
+      dockerfile: deploy/images/engine/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio-bootstrap:
+        condition: service_completed_successfully
+    command: >
+      serve
+      --grpc-addr 0.0.0.0:9100
+      --clickhouse-dsn clickhouse://default:dev@clickhouse:9000/clearvoiance
+      --postgres-dsn postgres://clearvoiance:dev@postgres:5432/clearvoiance?sslmode=disable
+      --minio-endpoint http://minio:9000
+      --minio-access-key dev
+      --minio-secret-key devdevdev
+      --minio-bucket clearvoiance-blobs
+      --minio-path-style
+    ports:
+      - "127.0.0.1:9100:9100"   # gRPC
 
 volumes:
   clickhouse_data:

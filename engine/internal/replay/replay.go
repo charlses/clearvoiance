@@ -364,7 +364,14 @@ func (e *Engine) run(ctx context.Context, cfg Config) (*summary, error) {
 			vuIdx := vu
 			wg.Add(1)
 			if sem != nil {
-				sem <- struct{}{}
+				// Non-blocking try first so we can record backpressure events
+				// (where the worker pool is saturated and we had to wait).
+				select {
+				case sem <- struct{}{}:
+				default:
+					sum.recordBackpressured()
+					sem <- struct{}{}
+				}
 			}
 			go func(ev *pb.Event, vu int) {
 				defer wg.Done()
@@ -479,11 +486,18 @@ func drainEvents(events <-chan *pb.Event, errs <-chan error) ([]*pb.Event, error
 
 // summary tracks running numbers for a replay's terminal row.
 type summary struct {
-	mu               sync.Mutex
-	EventsDispatched int64
-	EventsFailed     int64
-	latencies        []int64 // response_duration_ns
-	maxLagNs         int64
+	mu                  sync.Mutex
+	EventsDispatched    int64
+	EventsFailed        int64
+	EventsBackpressured int64
+	latencies           []int64 // response_duration_ns
+	maxLagNs            int64
+}
+
+func (s *summary) recordBackpressured() {
+	s.mu.Lock()
+	s.EventsBackpressured++
+	s.mu.Unlock()
 }
 
 func (s *summary) record(row storage.ReplayResultRow, failed bool) {
@@ -509,8 +523,9 @@ func (s *summary) metrics() metadata.ReplayMetrics {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := metadata.ReplayMetrics{
-		EventsDispatched: s.EventsDispatched,
-		EventsFailed:     s.EventsFailed,
+		EventsDispatched:    s.EventsDispatched,
+		EventsFailed:        s.EventsFailed,
+		EventsBackpressured: s.EventsBackpressured,
 	}
 	if n := len(s.latencies); n > 0 {
 		sorted := make([]int64, n)

@@ -90,6 +90,9 @@ message GetBlobUploadURLResponse {
   string key = 3;
   map<string, string> required_headers = 4;
   int64 expires_at_ns = 5;
+  // already_exists=true → SDK skips the PUT (same sha256 already present
+  // for this session). upload_url will be empty in that case.
+  bool already_exists = 6;
 }
 
 message StartSessionRequest {

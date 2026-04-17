@@ -53,6 +53,9 @@ func (p *Postgres) Sessions() Sessions { return &pgSessions{pool: p.pool} }
 // Replays returns the replays surface.
 func (p *Postgres) Replays() Replays { return &pgReplays{pool: p.pool} }
 
+// APIKeys returns the api-keys surface.
+func (p *Postgres) APIKeys() APIKeys { return &pgAPIKeys{pool: p.pool} }
+
 // Close drains the connection pool.
 func (p *Postgres) Close() error {
 	if p.pool != nil {
@@ -122,6 +125,46 @@ func (s *pgSessions) MarkStopped(ctx context.Context, id string, stoppedAt time.
 		return ErrSessionNotFound
 	}
 	return nil
+}
+
+func (s *pgSessions) Heartbeat(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE sessions SET last_heartbeat_at = NOW()
+		  WHERE id = $1 AND status = 'active'`,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSessionNotFound
+	}
+	return nil
+}
+
+func (s *pgSessions) SweepIdle(ctx context.Context, idle time.Duration) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`UPDATE sessions
+		    SET status = 'stopped',
+		        stopped_at = NOW()
+		  WHERE status = 'active'
+		    AND last_heartbeat_at < NOW() - make_interval(secs => $1)
+		 RETURNING id`,
+		idle.Seconds(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func (s *pgSessions) List(ctx context.Context) ([]SessionRow, error) {
@@ -197,6 +240,7 @@ func (r *pgReplays) Get(ctx context.Context, id string) (*ReplayRow, error) {
 	row := r.pool.QueryRow(ctx,
 		`SELECT id, source_session_id, target_url, speedup, label, status,
 		        started_at, finished_at, events_dispatched, events_failed,
+		        events_backpressured,
 		        p50_latency_ms, p95_latency_ms, p99_latency_ms, max_lag_ms,
 		        COALESCE(error_message, '')
 		   FROM replays WHERE id = $1`,
@@ -207,7 +251,7 @@ func (r *pgReplays) Get(ctx context.Context, id string) (*ReplayRow, error) {
 	var p50, p95, p99, maxLag *float64
 	err := row.Scan(&out.ID, &out.SourceSessionID, &out.TargetURL, &out.Speedup,
 		&out.Label, &out.Status, &out.StartedAt, &finishedAt,
-		&out.EventsDispatched, &out.EventsFailed,
+		&out.EventsDispatched, &out.EventsFailed, &out.EventsBackpressured,
 		&p50, &p95, &p99, &maxLag, &out.ErrorMessage)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -231,14 +275,15 @@ func (r *pgReplays) MarkFinished(ctx context.Context, id, status string,
 		        finished_at = $3,
 		        events_dispatched = $4,
 		        events_failed = $5,
-		        p50_latency_ms = $6,
-		        p95_latency_ms = $7,
-		        p99_latency_ms = $8,
-		        max_lag_ms = $9,
-		        error_message = NULLIF($10, '')
+		        events_backpressured = $6,
+		        p50_latency_ms = $7,
+		        p95_latency_ms = $8,
+		        p99_latency_ms = $9,
+		        max_lag_ms = $10,
+		        error_message = NULLIF($11, '')
 		  WHERE id = $1`,
 		id, status, finishedAt,
-		m.EventsDispatched, m.EventsFailed,
+		m.EventsDispatched, m.EventsFailed, m.EventsBackpressured,
 		m.P50LatencyMs, m.P95LatencyMs, m.P99LatencyMs, m.MaxLagMs,
 		errorMessage,
 	)
@@ -249,4 +294,86 @@ func (r *pgReplays) MarkFinished(ctx context.Context, id, status string,
 		return ErrReplayNotFound
 	}
 	return nil
+}
+
+// --- api_keys ---
+
+type pgAPIKeys struct {
+	pool *pgxpool.Pool
+}
+
+func (a *pgAPIKeys) Create(ctx context.Context, id, keyHash, name string) error {
+	_, err := a.pool.Exec(ctx,
+		`INSERT INTO api_keys (id, key_hash, name) VALUES ($1, $2, $3)`,
+		id, keyHash, name,
+	)
+	return err
+}
+
+func (a *pgAPIKeys) ValidateHash(ctx context.Context, keyHash string) (*APIKeyRow, error) {
+	row := a.pool.QueryRow(ctx,
+		`UPDATE api_keys SET last_used_at = NOW()
+		  WHERE key_hash = $1 AND revoked_at IS NULL
+		 RETURNING id, name, created_at, revoked_at, last_used_at`,
+		keyHash,
+	)
+	var r APIKeyRow
+	var revokedAt, lastUsedAt *time.Time
+	err := row.Scan(&r.ID, &r.Name, &r.CreatedAt, &revokedAt, &lastUsedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrAPIKeyNotFound
+		}
+		return nil, err
+	}
+	r.RevokedAt = revokedAt
+	r.LastUsedAt = lastUsedAt
+	return &r, nil
+}
+
+func (a *pgAPIKeys) Revoke(ctx context.Context, id string) error {
+	tag, err := a.pool.Exec(ctx,
+		`UPDATE api_keys SET revoked_at = NOW()
+		  WHERE id = $1 AND revoked_at IS NULL`,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAPIKeyNotFound
+	}
+	return nil
+}
+
+func (a *pgAPIKeys) List(ctx context.Context) ([]APIKeyRow, error) {
+	rows, err := a.pool.Query(ctx,
+		`SELECT id, name, created_at, revoked_at, last_used_at
+		   FROM api_keys ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []APIKeyRow{}
+	for rows.Next() {
+		var r APIKeyRow
+		var revokedAt, lastUsedAt *time.Time
+		if err := rows.Scan(&r.ID, &r.Name, &r.CreatedAt, &revokedAt, &lastUsedAt); err != nil {
+			return nil, err
+		}
+		r.RevokedAt = revokedAt
+		r.LastUsedAt = lastUsedAt
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (a *pgAPIKeys) Count(ctx context.Context) (int64, error) {
+	var n int64
+	err := a.pool.QueryRow(ctx,
+		`SELECT count(*) FROM api_keys WHERE revoked_at IS NULL`,
+	).Scan(&n)
+	return n, err
 }
