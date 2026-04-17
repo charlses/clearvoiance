@@ -49,6 +49,54 @@ jobs:
       - run: go vet ./engine/... ./db-observer/...
       - run: go test ./engine/... ./db-observer/...
 
+  go-integration:
+    name: go integration (testcontainers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache-dependency-path: "**/go.sum"
+      - name: regenerate proto bindings
+        uses: bufbuild/buf-action@v1
+        with:
+          version: 1.68.1
+          setup_only: true
+      - run: buf generate
+        working-directory: proto
+      # Integration tests use testcontainers-go to spin up real ClickHouse.
+      # GitHub-hosted runners have Docker available out of the box.
+      - run: go test -tags=integration -timeout=10m ./engine/...
+
+  e2e-smoke:
+    name: e2e capture smoke (engine + ClickHouse)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache-dependency-path: "**/go.sum"
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: regenerate proto bindings
+        uses: bufbuild/buf-action@v1
+        with:
+          version: 1.68.1
+          setup_only: true
+      - run: buf generate
+        working-directory: proto
+      # Full stack: boot ClickHouse, build engine, stream events from SDK,
+      # verify rows landed. Guards against "my tests pass but the real stack is broken."
+      - run: WITH_CLICKHOUSE=1 bash scripts/e2e-smoke.sh
+
   sdk-check:
     name: sdk-node build + test + typecheck
     runs-on: ubuntu-latest
