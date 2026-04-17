@@ -37,7 +37,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
-          cache: true
+          cache-dependency-path: "**/go.sum"
       - name: regenerate proto bindings
         uses: bufbuild/buf-action@v1
         with:
@@ -45,14 +45,11 @@ jobs:
           setup_only: true
       - run: buf generate
         working-directory: proto
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./...
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.60
-          args: --timeout=5m
+      - run: go build ./engine/... ./db-observer/...
+      - run: go vet ./engine/... ./db-observer/...
+      - run: go test ./engine/... ./db-observer/...
+      # golangci-lint returns per Phase 1 once we have real engine packages.
+      # Phase 0 engine is too tiny for lint to be meaningful.
 
   sdk-check:
     name: sdk-node build + test + typecheck

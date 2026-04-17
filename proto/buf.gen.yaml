@@ -28,3 +28,4 @@ plugins:
       - env=node
       - useOptionals=messages
       - unrecognizedEnum=false
+      - importSuffix=.js
