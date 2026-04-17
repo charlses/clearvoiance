@@ -377,6 +377,11 @@ func (e *Engine) run(ctx context.Context, cfg Config) (*summary, error) {
 	// replay.{id}.progress. Tick interval is 250ms per the plan; the
 	// publisher's Publish() is non-blocking (drops on slow clients) so
 	// this never back-pressures the scheduler.
+	// A dedicated `stopProgress` signal lets us stop the ticker when the
+	// scheduler finishes naturally. Relying on ctx.Done() would hang on
+	// successful runs since ctx is only cancelled by explicit replay.Cancel
+	// or parent shutdown.
+	stopProgress := make(chan struct{})
 	progressDone := make(chan struct{})
 	if e.publisher != nil {
 		go func() {
@@ -385,6 +390,8 @@ func (e *Engine) run(ctx context.Context, cfg Config) (*summary, error) {
 			defer tick.Stop()
 			for {
 				select {
+				case <-stopProgress:
+					return
 				case <-ctx.Done():
 					return
 				case <-tick.C:
@@ -397,6 +404,7 @@ func (e *Engine) run(ctx context.Context, cfg Config) (*summary, error) {
 		close(progressDone)
 	}
 	defer func() {
+		close(stopProgress)
 		<-progressDone
 		// Final snapshot once everything settles so subscribers see the
 		// terminal counters before the replay row lands.
