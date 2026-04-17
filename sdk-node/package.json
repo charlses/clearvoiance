@@ -34,6 +34,16 @@
       "types": "./dist/adapters/http/express.d.ts",
       "import": "./dist/adapters/http/express.js",
       "require": "./dist/adapters/http/express.cjs"
+    },
+    "./http/koa": {
+      "types": "./dist/adapters/http/koa.d.ts",
+      "import": "./dist/adapters/http/koa.js",
+      "require": "./dist/adapters/http/koa.cjs"
+    },
+    "./http/strapi": {
+      "types": "./dist/adapters/http/strapi.d.ts",
+      "import": "./dist/adapters/http/strapi.js",
+      "require": "./dist/adapters/http/strapi.cjs"
     }
   },
   "files": [
@@ -55,8 +65,10 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
+    "@types/koa": "^3.0.2",
     "@types/node": "^25.6.0",
     "express": "^5.2.1",
+    "koa": "^3.2.0",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
@@ -68,9 +80,11 @@
     "@grpc/grpc-js": "^1.14.3"
   },
   "peerDependencies": {
-    "express": ">=4.0.0 <6.0.0"
+    "express": ">=4.0.0 <6.0.0",
+    "koa": ">=2.0.0 <4.0.0"
   },
   "peerDependenciesMeta": {
-    "express": { "optional": true }
+    "express": { "optional": true },
+    "koa": { "optional": true }
   }
 }
