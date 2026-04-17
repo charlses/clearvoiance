@@ -26,6 +26,9 @@ async function main(): Promise<void> {
   const client = createClient({
     engine: { url: ENGINE_URL, apiKey: API_KEY },
     session: { name: SESSION_NAME },
+    ...(process.env.CLEARVOIANCE_WAL_DIR
+      ? { wal: { dir: process.env.CLEARVOIANCE_WAL_DIR } }
+      : {}),
   });
 
   console.log(`→ starting session against ${ENGINE_URL}`);
