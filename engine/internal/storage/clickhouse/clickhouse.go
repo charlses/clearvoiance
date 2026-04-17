@@ -24,6 +24,29 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+// DbObservationsSchema is the canonical CREATE TABLE for the db_observations
+// table. Exported so the CLI + REST handlers can idempotently ensure the
+// table exists without needing to reach into the embedded schema.sql. If
+// the shape here changes, schema.sql must match — integration tests cover
+// that by running the full migration on boot.
+const DbObservationsSchema = `
+CREATE TABLE IF NOT EXISTS db_observations (
+    observation_id    String,
+    replay_id         String,
+    event_id          String,
+    observation_type  LowCardinality(String),
+    observed_at_ns    Int64,
+    duration_ns       Int64,
+    query_text        String CODEC(ZSTD(6)),
+    query_fingerprint String,
+    wait_event_type   LowCardinality(String),
+    wait_event        String
+) ENGINE = MergeTree()
+PARTITION BY (replay_id)
+ORDER BY (replay_id, event_id, observed_at_ns)
+SETTINGS index_granularity = 8192;
+`
+
 // Store persists events to ClickHouse.
 type Store struct {
 	conn driver.Conn

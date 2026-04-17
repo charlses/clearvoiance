@@ -1,6 +1,6 @@
 # Phase 2 — Replay Engine
 
-**Duration:** 2 weeks.
+**Status:** Shipped 2026-04-17.
 **Goal:** Take a captured session and replay its events against a target SUT at configurable speedup (1× to 100×). Measure response latencies, error rates, and timing lag.
 
 ## Deliverables

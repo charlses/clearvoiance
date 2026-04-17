@@ -22,7 +22,16 @@ Output: "Under 12× prod load, request `POST /api/leads` triggers lock contentio
 
 ## Status
 
-Planning phase. See [`plan/`](./plan/README.md) for the full roadmap across 9 phases (~12 weeks to OSS launch).
+Phases 0 through 6 are shipped end-to-end, all green in CI (14 jobs: Go unit + Go integration via testcontainers Postgres/ClickHouse, seven per-adapter e2e smokes, SDK unit + SDK integration, UI build + lint + typecheck, and UI e2e via Playwright). What's live today:
+
+- **Capture**: `@clearvoiance/node` SDK — HTTP (Express/Koa/Strapi), Socket.io, node-cron, direct outbound HTTP + `fetch` capture with AsyncLocalStorage event correlation.
+- **Replay engine**: time-compressed replay at N× speedup, virtual-user fan-out, JWT-resign / static-swap auth strategies, Starlark body mutators, time-window selection + target-duration auto-speedup.
+- **Hermetic mode**: captured outbounds served from a mock pack, cron killer + invoke server so the SUT's scheduler never fires during replay, strict/loose policies, engine-side unmocked-outbound log.
+- **DB observer**: out-of-process `clearvoiance-observer` polls `pg_stat_activity` and correlates slow queries back to replay events via `application_name = clv:<event_id>` set by the SDK's `instrumentPg`.
+- **Control plane**: REST API at `/api/v1/*` (sessions, replays, api-keys, db-observations, health, metrics, config) + WebSocket hub with live replay progress. OpenAPI 3.1 at `/api/v1/openapi.yaml`, Swagger UI at `/docs`, Postgres-backed audit log with secret-redacted payloads.
+- **UI**: Next.js 16 + React 19 dashboard consuming the REST + WS — sessions, replays with 250ms live progress, DB observations view, API key management.
+
+Remaining phases per [`plan/`](./plan/README.md): **Phase 7** (more SDK languages / framework adapters) and **Phase 8** (OSS launch + docs site).
 
 ## Architecture at a glance
 

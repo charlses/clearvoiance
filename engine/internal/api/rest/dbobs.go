@@ -11,6 +11,8 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/go-chi/chi/v5"
+
+	chstore "github.com/charlses/clearvoiance/engine/internal/storage/clickhouse"
 )
 
 // DB-observation endpoints power the UI's slow-query view. Back-end is the
@@ -67,7 +69,7 @@ func (h *dbObsHandler) topSlow(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	if err := conn.Exec(r.Context(), bootstrapDbObservationsSchema); err != nil {
+	if err := conn.Exec(r.Context(), chstore.DbObservationsSchema); err != nil {
 		WriteError(w, http.StatusInternalServerError, "INTERNAL",
 			"ensure table: "+err.Error(), nil)
 		return
@@ -133,7 +135,7 @@ func (h *dbObsHandler) byEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	if err := conn.Exec(r.Context(), bootstrapDbObservationsSchema); err != nil {
+	if err := conn.Exec(r.Context(), chstore.DbObservationsSchema); err != nil {
 		WriteError(w, http.StatusInternalServerError, "INTERNAL",
 			"ensure table: "+err.Error(), nil)
 		return
@@ -199,7 +201,7 @@ func (h *dbObsHandler) deadlocks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
-	if err := conn.Exec(r.Context(), bootstrapDbObservationsSchema); err != nil {
+	if err := conn.Exec(r.Context(), chstore.DbObservationsSchema); err != nil {
 		WriteError(w, http.StatusInternalServerError, "INTERNAL",
 			"ensure table: "+err.Error(), nil)
 		return
@@ -269,23 +271,6 @@ func (h *dbObsHandler) explain(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-const bootstrapDbObservationsSchema = `
-CREATE TABLE IF NOT EXISTS db_observations (
-    observation_id    String,
-    replay_id         String,
-    event_id          String,
-    observation_type  LowCardinality(String),
-    observed_at_ns    Int64,
-    duration_ns       Int64,
-    query_text        String CODEC(ZSTD(6)),
-    query_fingerprint String,
-    wait_event_type   LowCardinality(String),
-    wait_event        String
-) ENGINE = MergeTree()
-PARTITION BY (replay_id)
-ORDER BY (replay_id, event_id, observed_at_ns)
-SETTINGS index_granularity = 8192;
-`
 
 func openCH(ctx context.Context, dsn string) (driver.Conn, error) {
 	u, err := url.Parse(dsn)

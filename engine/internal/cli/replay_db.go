@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	chstore "github.com/charlses/clearvoiance/engine/internal/storage/clickhouse"
 )
 
 // dbObservationRow is the aggregated slow-query / lock-wait row shown by
@@ -43,7 +45,7 @@ func queryDbObservations(ctx context.Context, dsn, replayID string, topN int) ([
 	// Ensure the table exists. If the observer never ran for this replay
 	// there will simply be 0 rows; we'd rather return an empty result
 	// than bubble up "table doesn't exist" noise to the operator.
-	if err := conn.Exec(ctx, bootstrapDbObservationsSchema); err != nil {
+	if err := conn.Exec(ctx, chstore.DbObservationsSchema); err != nil {
 		return nil, nil, fmt.Errorf("ensure db_observations: %w", err)
 	}
 
@@ -121,22 +123,3 @@ func queryDbObservations(ctx context.Context, dsn, replayID string, topN int) ([
 	return rows, byEndpoint, nil
 }
 
-// bootstrapDbObservationsSchema is the same CREATE as the observer's sink
-// so either side can idempotently ensure the table exists.
-const bootstrapDbObservationsSchema = `
-CREATE TABLE IF NOT EXISTS db_observations (
-    observation_id    String,
-    replay_id         String,
-    event_id          String,
-    observation_type  LowCardinality(String),
-    observed_at_ns    Int64,
-    duration_ns       Int64,
-    query_text        String CODEC(ZSTD(6)),
-    query_fingerprint String,
-    wait_event_type   LowCardinality(String),
-    wait_event        String
-) ENGINE = MergeTree()
-PARTITION BY (replay_id)
-ORDER BY (replay_id, event_id, observed_at_ns)
-SETTINGS index_granularity = 8192;
-`

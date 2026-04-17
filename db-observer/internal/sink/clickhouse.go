@@ -23,8 +23,16 @@ type ClickHouseSink struct {
 	batchCap int
 }
 
-// Schema for the db_observations table. Kept co-located with the sink so
-// the observer can bootstrap its own storage without coupling to the engine.
+// DbObservationsSchema is kept co-located with the sink so the observer
+// binary can bootstrap its own storage without a cross-module dependency
+// on the engine's `internal/storage/clickhouse` package.
+//
+// The canonical shape lives in
+// `engine/internal/storage/clickhouse/clickhouse.go` (const of the same
+// name) and in `engine/internal/storage/clickhouse/schema.sql`. If this
+// DDL ever diverges, the integration tests on both sides catch it — both
+// run `CREATE TABLE IF NOT EXISTS` on startup and conflicting column
+// definitions fail loudly.
 const DbObservationsSchema = `
 CREATE TABLE IF NOT EXISTS db_observations (
     observation_id    String,

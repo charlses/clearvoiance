@@ -1,6 +1,6 @@
 # Phase 1 — Capture MVP
 
-**Duration:** 2 weeks.
+**Status:** Shipped 2026-04-17.
 **Goal:** A Node app using `@clearvoiance/node` can capture HTTP + Socket.io + cron events to the engine, which persists them to ClickHouse and MinIO. End-to-end, wire-level, real storage.
 
 This is the phase that proves the architecture works. Everything after this is additive.

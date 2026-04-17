@@ -1,36 +1,58 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# @clearvoiance/ui
 
-## Getting Started
+Next.js 16 dashboard for the clearvoiance engine. Consumes the engine's
+REST API (`/api/v1/*`) and WebSocket hub (`/ws`) — see
+`plan/16-phase-6-frontend.md` for the full design.
 
-First, run the development server:
+## Dev
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm install        # from the monorepo root
+pnpm dev            # starts Next.js on :3100
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The UI expects an engine reachable at `http://127.0.0.1:9101` by default.
+Override with `NEXT_PUBLIC_CLEARVOIANCE_API`:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+NEXT_PUBLIC_CLEARVOIANCE_API=http://engine.staging:9101 pnpm dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+On first load you'll be redirected to `/login`. Enter any non-empty key
+if the engine is in dev-open mode; once API keys are provisioned, use
+a real one minted via Settings or `clearvoiance api-keys create`.
 
-## Learn More
+## Layout
 
-To learn more about Next.js, take a look at the following resources:
+- `src/app/(authed)/*` — app pages behind the auth gate (dashboard,
+  sessions, replays, settings).
+- `src/app/login/*` — unauthenticated login page.
+- `src/lib/api.ts` — typed REST client.
+- `src/lib/ws.ts` + `src/lib/hooks/use-ws-topic.ts` — WebSocket singleton
+  and subscribe hook.
+- `src/components/ui/*` — shadcn-style primitives (Card, Button, Table,
+  StatusPill, Code).
+- `tests/e2e/*.spec.ts` — Playwright happy-path tests with a mocked
+  engine (`page.route()`).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Commands
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+pnpm dev        # Next.js dev server on :3100
+pnpm build      # production build
+pnpm start      # serve the production build on :3100
+pnpm lint       # ESLint
+pnpm typecheck  # tsc --noEmit
+pnpm test       # Playwright e2e (builds + serves + runs)
+```
 
-## Deploy on Vercel
+## Live progress
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Replay detail (`/replays/[id]`) subscribes to the engine's
+`replay.<id>.progress` topic while status is `running` or `pending`.
+The 250ms snapshots override the REST counters in-flight; once the
+replay finishes, the final `status:"finished"` snapshot arrives and
+the page reverts to pure REST polling.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+If the engine's topic semantics change, keep `src/lib/hooks/use-ws-topic.ts`
+and the detail page's subscription in sync.

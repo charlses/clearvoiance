@@ -1,6 +1,6 @@
 # Phase 0 — Foundations
 
-**Duration:** 2–3 days.
+**Status:** Shipped 2026-04-17.
 **Goal:** Empty repo → fully scaffolded monorepo with CI green on a trivial commit.
 
 Phase 0 produces no user-facing functionality. It removes all "yak shaving" from every subsequent phase so that feature work can start immediately when Phase 1 begins.

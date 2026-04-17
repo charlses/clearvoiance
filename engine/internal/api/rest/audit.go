@@ -177,21 +177,10 @@ func NewPostgresAuditWriter(pool *pgxpool.Pool) *PostgresAuditWriter {
 	return &PostgresAuditWriter{pool: pool}
 }
 
-// AuditLogSchema must be applied once per engine boot. Idempotent.
-const AuditLogSchema = `
-CREATE TABLE IF NOT EXISTS audit_log (
-    id           UUID PRIMARY KEY,
-    ts           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    api_key_id   TEXT NOT NULL,
-    action       TEXT NOT NULL,
-    target_type  TEXT NOT NULL,
-    target_id    TEXT,
-    payload      JSONB,
-    source_ip    TEXT
-);
-CREATE INDEX IF NOT EXISTS audit_log_ts_idx ON audit_log (ts DESC);
-CREATE INDEX IF NOT EXISTS audit_log_key_idx ON audit_log (api_key_id, ts DESC);
-`
+// The audit_log table DDL lives in engine/internal/storage/metadata/
+// postgres_schema.sql and is applied idempotently on engine startup.
+// Nothing here needs to carry a duplicate constant — the schema file is
+// the single source of truth.
 
 func (w *PostgresAuditWriter) WriteEntry(ctx context.Context, e AuditEntry) error {
 	_, err := w.pool.Exec(ctx, `
