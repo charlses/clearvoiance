@@ -73,7 +73,7 @@ Each captures `QueueEvent` records on consumption. During replay, the engine pub
 
 Already in Phase 1: http/https, undici. Add:
 
-- `@clearvoiance/node/outbound/fetch` — global `fetch` (Node 18+)
+- `@clearvoiance/node/outbound/fetch` — global `fetch` (Node 24+)
 - `@clearvoiance/node/outbound/prisma` — Prisma query interceptor
 - `@clearvoiance/node/outbound/stripe` — Stripe SDK wrapper (uses underlying HTTP, but tags nicely)
 - `@clearvoiance/node/outbound/openai` — OpenAI SDK wrapper

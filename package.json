@@ -1,10 +1,10 @@
 {
   "name": "clearvoiance-monorepo",
   "private": true,
-  "packageManager": "pnpm@9.5.0",
+  "packageManager": "pnpm@10.33.0",
   "engines": {
-    "node": ">=20",
-    "pnpm": ">=9"
+    "node": ">=24",
+    "pnpm": ">=10"
   },
   "scripts": {
     "lint": "pnpm -r lint",
@@ -15,7 +15,15 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yaml,yml}\""
   },
   "devDependencies": {
-    "@changesets/cli": "^2.27.7",
-    "prettier": "^3.3.2"
+    "@changesets/cli": "^2.30.0",
+    "prettier": "^3.8.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "protobufjs",
+      "sharp",
+      "unrs-resolver"
+    ]
   }
 }

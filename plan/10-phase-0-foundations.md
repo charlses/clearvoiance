@@ -17,7 +17,7 @@ Create the directory tree from [`05-repo-structure.md`](./05-repo-structure.md).
 ### 2. Go workspace + baseline engine module
 
 - `go.work` at repo root referencing `engine/` and `db-observer/`.
-- `engine/go.mod` with module path `github.com/<org>/clearvoiance/engine` and Go 1.22.
+- `engine/go.mod` with module path `github.com/<org>/clearvoiance/engine` and Go 1.26.
 - `engine/cmd/clearvoiance/main.go` with a no-op CLI that prints `clearvoiance <version>` and exits.
 - `engine/internal/telemetry/` with a `slog` setup.
 
@@ -99,7 +99,7 @@ All jobs must pass before merge. Branch protection rule enforced.
 
 `CONTRIBUTING.md` section "Setting up your dev environment":
 
-- Required tools: Go 1.22+, Node 20+, pnpm 9+, Docker, `buf`, `just`, `air`, `mise` (recommended).
+- Required tools: Go 1.26+, Node 24+, pnpm 10+, Docker, `buf`, `just`, `air`, `mise` (recommended).
 - `mise.toml` at repo root pinning all tool versions.
 - One-command bootstrap: `git clone && cd clearvoiance && mise install && just bootstrap`.
 

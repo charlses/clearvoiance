@@ -14,11 +14,11 @@ mise install
 
 If you prefer to manage tools yourself, install these versions (see `mise.toml` for exact pins):
 
-- **Go** 1.22+
-- **Node.js** 20+ (LTS)
-- **pnpm** 9+
-- **buf** 1.30+ (protobuf)
-- **just** 1.25+ (task runner)
+- **Go** 1.26+
+- **Node.js** 24+ (LTS)
+- **pnpm** 10+
+- **buf** 1.68+ (protobuf)
+- **just** 1.49+ (task runner)
 - **Docker** + Docker Compose
 
 ### First-time setup

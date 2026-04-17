@@ -15,7 +15,7 @@ jobs:
     name: proto lint + breaking
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: bufbuild/buf-action@v1
@@ -30,13 +30,13 @@ jobs:
         working-directory: proto
 
   go-check:
-    name: go build + test + lint
+    name: go build + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
-          go-version: "1.22"
+          go-version: "1.26"
           cache-dependency-path: "**/go.sum"
       - name: regenerate proto bindings
         uses: bufbuild/buf-action@v1
@@ -48,20 +48,18 @@ jobs:
       - run: go build ./engine/... ./db-observer/...
       - run: go vet ./engine/... ./db-observer/...
       - run: go test ./engine/... ./db-observer/...
-      # golangci-lint returns per Phase 1 once we have real engine packages.
-      # Phase 0 engine is too tiny for lint to be meaningful.
 
   sdk-check:
     name: sdk-node build + test + typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v5
         with:
-          version: 9.5.0
-      - uses: actions/setup-node@v4
+          version: 10.33.0
+      - uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: regenerate proto bindings
@@ -79,13 +77,13 @@ jobs:
     name: ui build + lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v5
         with:
-          version: 9.5.0
-      - uses: actions/setup-node@v4
+          version: 10.33.0
+      - uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @clearvoiance/ui lint

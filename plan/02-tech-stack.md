@@ -2,7 +2,7 @@
 
 Every choice below has a why. Don't deviate without updating this doc and `22-open-questions.md`.
 
-## Core engine: **Go 1.22+**
+## Core engine: **Go 1.26+**
 
 - **Concurrency model.** Goroutines + channels fit the replay engine's "fire N events per ms at a worker pool" shape perfectly. Node's single-threaded loop chokes at 10K+ events/s dispatch; Go handles it without thinking about it.
 - **Static binary.** Single `clearvoiance` executable, trivial to ship in Docker or release tarballs. No runtime dependency hell.
@@ -112,7 +112,7 @@ Every choice below has a why. Don't deviate without updating this doc and `22-op
 ## Supported platforms
 
 - Engine: Linux (amd64, arm64), macOS (amd64, arm64) for dev. No Windows server for v1.
-- Node SDK: Node.js 18+ (LTS and current).
+- Node SDK: Node.js 24+ (LTS).
 - UI: any modern browser (Chromium 100+, Firefox 100+, Safari 15+).
 
 ## Deferred tech decisions

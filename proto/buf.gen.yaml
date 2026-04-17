@@ -29,3 +29,4 @@ plugins:
       - useOptionals=messages
       - unrecognizedEnum=false
       - importSuffix=.js
+      - forceLong=bigint
