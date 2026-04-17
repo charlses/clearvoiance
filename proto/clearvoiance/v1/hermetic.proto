@@ -1,0 +1,39 @@
+// Hermetic mode gRPC surface. The SDK, on hermetic activation, streams the
+// mock pack for a captured session so outbound calls inside the SUT can be
+// served from replayed responses instead of hitting real APIs.
+//
+// See plan/13-phase-3-hermetic-mode.md for the full flow.
+syntax = "proto3";
+
+package clearvoiance.v1;
+
+service HermeticService {
+  // Streams captured OutboundEvents for a session. The SDK indexes them by
+  // (caused_by_event_id, signature) on its side.
+  rpc GetMockPack(GetMockPackRequest) returns (stream MockEntry);
+}
+
+message GetMockPackRequest {
+  string source_session_id = 1;
+  string api_key = 2;
+}
+
+// One captured outbound response, keyed by the inbound event that caused it
+// and the canonical signature of the outbound request. The SDK computes the
+// signature on the live call at replay time; the engine computes it on the
+// captured call at export time so both sides agree.
+message MockEntry {
+  string caused_by_event_id = 1;
+  string signature = 2;
+  int32 status = 3;
+  map<string, HeaderValuesM> response_headers = 4;
+  bytes response_body = 5;
+  string response_content_type = 6;
+}
+
+// Wrapper for a repeated string header value. (Duplicate of HeaderValues
+// from event.proto; kept here for forward-compat if the hermetic surface
+// needs to diverge later.)
+message HeaderValuesM {
+  repeated string values = 1;
+}

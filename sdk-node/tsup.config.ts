@@ -8,6 +8,8 @@ export default defineConfig({
     "adapters/http/strapi": "src/adapters/http/strapi.ts",
     "adapters/socket/socketio": "src/adapters/socket/socketio.ts",
     "adapters/cron/node-cron": "src/adapters/cron/node-cron.ts",
+    "outbound/index": "src/outbound/index.ts",
+    "hermetic/index": "src/hermetic/index.ts",
   },
   format: ["esm", "cjs"],
   dts: true,

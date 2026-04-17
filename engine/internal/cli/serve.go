@@ -134,6 +134,7 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 		replay.NewSocketIODispatcher(log),
 	)
 	replayGRPC := capturegrpc.NewReplayServer(log, replayEngine, meta.Replays())
+	hermeticGRPC := capturegrpc.NewHermeticServer(log, store, meta.APIKeys())
 
 	lis, err := net.Listen("tcp", opts.grpcAddr)
 	if err != nil {
@@ -143,6 +144,7 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 	srv := grpc.NewServer()
 	pb.RegisterCaptureServiceServer(srv, capture)
 	pb.RegisterReplayServiceServer(srv, replayGRPC)
+	pb.RegisterHermeticServiceServer(srv, hermeticGRPC)
 	// Reflection lets us poke the server with grpcurl during development.
 	reflection.Register(srv)
 

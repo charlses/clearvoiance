@@ -54,6 +54,16 @@
       "types": "./dist/adapters/cron/node-cron.d.ts",
       "import": "./dist/adapters/cron/node-cron.js",
       "require": "./dist/adapters/cron/node-cron.cjs"
+    },
+    "./outbound": {
+      "types": "./dist/outbound/index.d.ts",
+      "import": "./dist/outbound/index.js",
+      "require": "./dist/outbound/index.cjs"
+    },
+    "./hermetic": {
+      "types": "./dist/hermetic/index.d.ts",
+      "import": "./dist/hermetic/index.js",
+      "require": "./dist/hermetic/index.cjs"
     }
   },
   "files": [
