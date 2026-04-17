@@ -48,6 +48,9 @@ func (s *ReplayServer) StartReplay(ctx context.Context, req *pb.StartReplayReque
 		TargetURL:       req.GetTargetUrl(),
 		Speedup:         req.GetSpeedup(),
 		Label:           req.GetLabel(),
+		VirtualUsers:    int(req.GetVirtualUsers()),
+		Auth:            replay.AuthFromProto(req.GetAuth()),
+		Mutator:         replay.MutatorFromProto(req.GetMutator()),
 	}
 
 	// Run in a background goroutine — don't block the RPC on the replay.

@@ -53,7 +53,7 @@ func (*HTTPDispatcher) CanHandle(ev *pb.Event) bool {
 }
 
 // Dispatch implements Dispatcher.
-func (d *HTTPDispatcher) Dispatch(ctx context.Context, ev *pb.Event, target *TargetConfig) (DispatchResult, error) {
+func (d *HTTPDispatcher) Dispatch(ctx context.Context, ev *pb.Event, target *TargetConfig, vu int) (DispatchResult, error) {
 	httpEv := extractHTTP(ev)
 	if httpEv == nil {
 		return DispatchResult{}, fmt.Errorf("http dispatcher: event has no http payload")
@@ -70,6 +70,21 @@ func (d *HTTPDispatcher) Dispatch(ctx context.Context, ev *pb.Event, target *Tar
 	fullURL := base + path
 
 	bodyBytes := extractBody(httpEv.GetRequestBody())
+
+	// Mutate per-VU (vu=0 leaves the body alone).
+	if target.Mutator != nil {
+		contentType := contentTypeFrom(httpEv)
+		mutated, mErr := target.Mutator.Mutate(bodyBytes, contentType, vu)
+		if mErr != nil {
+			return DispatchResult{
+				HTTPMethod: httpEv.GetMethod(),
+				HTTPPath:   path,
+				HTTPRoute:  httpEv.GetRouteTemplate(),
+			}, fmt.Errorf("mutator: %w", mErr)
+		}
+		bodyBytes = mutated
+	}
+
 	req, err := http.NewRequestWithContext(ctx, httpEv.GetMethod(), fullURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return DispatchResult{
@@ -95,6 +110,21 @@ func (d *HTTPDispatcher) Dispatch(ctx context.Context, ev *pb.Event, target *Tar
 	// real traffic on the target.
 	req.Header.Set("User-Agent", "clearvoiance-replayer/0.1")
 	req.Header.Set("X-Clearvoiance-Event-Id", ev.GetId())
+	if vu > 0 {
+		req.Header.Set("X-Clearvoiance-Vu", fmt.Sprintf("%d", vu))
+	}
+
+	// Auth rewrite runs last so captured Authorization is available to parsers
+	// (e.g. JWT resign reads the original then overwrites).
+	if target.Auth != nil {
+		if err := target.Auth.Apply(req); err != nil {
+			return DispatchResult{
+				HTTPMethod: httpEv.GetMethod(),
+				HTTPPath:   path,
+				HTTPRoute:  httpEv.GetRouteTemplate(),
+			}, fmt.Errorf("auth: %w", err)
+		}
+	}
 
 	start := time.Now()
 	resp, err := d.client.Do(req)
@@ -124,6 +154,21 @@ func (d *HTTPDispatcher) Dispatch(ctx context.Context, ev *pb.Event, target *Tar
 		HTTPPath:           path,
 		HTTPRoute:          httpEv.GetRouteTemplate(),
 	}, nil
+}
+
+// contentTypeFrom reads Content-Type from a captured HTTP event's request body
+// / headers. Falls back to "" so mutators can decide whether to act.
+func contentTypeFrom(h *pb.HttpEvent) string {
+	if h.GetRequestBody() != nil && h.GetRequestBody().GetContentType() != "" {
+		return h.GetRequestBody().GetContentType()
+	}
+	if vals, ok := h.GetHeaders()["content-type"]; ok && len(vals.GetValues()) > 0 {
+		return vals.GetValues()[0]
+	}
+	if vals, ok := h.GetHeaders()["Content-Type"]; ok && len(vals.GetValues()) > 0 {
+		return vals.GetValues()[0]
+	}
+	return ""
 }
 
 func extractHTTP(ev *pb.Event) *pb.HttpEvent {

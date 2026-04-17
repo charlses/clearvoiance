@@ -31,21 +31,23 @@ type ResultSink interface {
 	InsertReplayEvents(ctx context.Context, rows []storage.ReplayResultRow) error
 }
 
-// Dispatcher handles one protocol (http, socket.io, cron, …). Phase 2a ships
-// only HTTP; future dispatchers register here without touching the scheduler.
+// Dispatcher handles one protocol (http, socket.io, cron, …). Phase 2a shipped
+// HTTP; future dispatchers register here without touching the scheduler.
 type Dispatcher interface {
 	Name() string
 	// CanHandle reports whether this dispatcher wants the event.
 	CanHandle(ev *pb.Event) bool
-	// Dispatch fires the event against the target and returns a result. It
-	// should not return an error for "response was 5xx" — that's part of the
-	// result. Errors are for transport-level failures only.
-	Dispatch(ctx context.Context, ev *pb.Event, target *TargetConfig) (DispatchResult, error)
+	// Dispatch fires the event against the target. vu is the virtual-user
+	// index (0 for the original; 1..N-1 for fan-out replicas). Errors are for
+	// transport-level failures; 5xx responses live in DispatchResult.
+	Dispatch(ctx context.Context, ev *pb.Event, target *TargetConfig, vu int) (DispatchResult, error)
 }
 
-// TargetConfig is what a dispatcher needs to know about where to fire events.
+// TargetConfig is what a dispatcher needs to know about where/how to fire.
 type TargetConfig struct {
 	BaseURL string
+	Auth    AuthStrategy
+	Mutator Mutator
 }
 
 // DispatchResult is the shape each dispatcher returns per event.
@@ -69,6 +71,13 @@ type Config struct {
 	TargetURL       string
 	Speedup         float64
 	Label           string
+	// VirtualUsers = N fans each captured event out to N dispatches (vu=0..N-1)
+	// at the scheduled time; vu=0 preserves the original payload.
+	VirtualUsers int
+	// Auth rewrites credentials before each dispatch. Defaults to AuthNone.
+	Auth AuthStrategy
+	// Mutator rewrites request bodies per VU. Defaults to MutatorNone.
+	Mutator Mutator
 	// Optional cap on how many dispatches run in parallel. 0 = unbounded.
 	MaxConcurrency int
 }
@@ -172,7 +181,21 @@ func (e *Engine) run(ctx context.Context, cfg Config) (*summary, error) {
 
 	baseTimestampNs := buffered[0].GetTimestampNs()
 	replayStart := time.Now()
-	target := &TargetConfig{BaseURL: cfg.TargetURL}
+
+	auth := cfg.Auth
+	if auth == nil {
+		auth = AuthNone{}
+	}
+	mutator := cfg.Mutator
+	if mutator == nil {
+		mutator = MutatorNone{}
+	}
+	target := &TargetConfig{BaseURL: cfg.TargetURL, Auth: auth, Mutator: mutator}
+
+	vuCount := cfg.VirtualUsers
+	if vuCount < 1 {
+		vuCount = 1
+	}
 
 	// Worker pool: bounded if MaxConcurrency > 0, else unbounded.
 	var sem chan struct{}
@@ -217,42 +240,51 @@ func (e *Engine) run(ctx context.Context, cfg Config) (*summary, error) {
 			continue
 		}
 
-		wg.Add(1)
-		if sem != nil {
-			sem <- struct{}{}
-		}
-		go func(ev *pb.Event) {
-			defer wg.Done()
+		// Fan out to virtual users. Each VU is an independent dispatch at the
+		// same scheduled time. vu=0 preserves the captured payload.
+		for vu := 0; vu < vuCount; vu++ {
+			vuIdx := vu
+			wg.Add(1)
 			if sem != nil {
-				defer func() { <-sem }()
+				sem <- struct{}{}
 			}
-			res, derr := dispatcher.Dispatch(ctx, ev, target)
-			row := storage.ReplayResultRow{
-				ReplayID:           cfg.ReplayID,
-				EventID:            ev.GetId(),
-				ScheduledFireNs:    scheduledNs,
-				ActualFireNs:       actual.UnixNano(),
-				LagNs:              lag.Nanoseconds(),
-				ResponseStatus:     res.ResponseStatus,
-				ResponseDurationNs: res.ResponseDurationNs,
-				ErrorCode:          res.ErrorCode,
-				ErrorMessage:       res.ErrorMessage,
-				BytesSent:          res.BytesSent,
-				BytesReceived:      res.BytesReceived,
-				HTTPMethod:         res.HTTPMethod,
-				HTTPPath:           res.HTTPPath,
-				HTTPRoute:          res.HTTPRoute,
-			}
-			if derr != nil {
-				row.ErrorCode = "dispatch_error"
-				row.ErrorMessage = derr.Error()
-			}
-			sum.record(row, derr != nil || res.ResponseStatus >= 500)
-			select {
-			case results <- row:
-			case <-ctx.Done():
-			}
-		}(ev)
+			go func(ev *pb.Event, vu int) {
+				defer wg.Done()
+				if sem != nil {
+					defer func() { <-sem }()
+				}
+				res, derr := dispatcher.Dispatch(ctx, ev, target, vu)
+				eventID := ev.GetId()
+				if vu > 0 {
+					eventID = fmt.Sprintf("%s:vu%d", eventID, vu)
+				}
+				row := storage.ReplayResultRow{
+					ReplayID:           cfg.ReplayID,
+					EventID:            eventID,
+					ScheduledFireNs:    scheduledNs,
+					ActualFireNs:       actual.UnixNano(),
+					LagNs:              lag.Nanoseconds(),
+					ResponseStatus:     res.ResponseStatus,
+					ResponseDurationNs: res.ResponseDurationNs,
+					ErrorCode:          res.ErrorCode,
+					ErrorMessage:       res.ErrorMessage,
+					BytesSent:          res.BytesSent,
+					BytesReceived:      res.BytesReceived,
+					HTTPMethod:         res.HTTPMethod,
+					HTTPPath:           res.HTTPPath,
+					HTTPRoute:          res.HTTPRoute,
+				}
+				if derr != nil {
+					row.ErrorCode = "dispatch_error"
+					row.ErrorMessage = derr.Error()
+				}
+				sum.record(row, derr != nil || res.ResponseStatus >= 500)
+				select {
+				case results <- row:
+				case <-ctx.Done():
+				}
+			}(ev, vuIdx)
+		}
 	}
 
 	wg.Wait()

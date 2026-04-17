@@ -1,7 +1,7 @@
-// ReplayService — Phase 2a.
+// ReplayService — Phase 2.
 // Reads captured events from a session and replays them against a target URL
-// at a configurable speedup. HTTP dispatcher only in 2a; socket.io + cron +
-// queue + auth strategies + virtual-user mutators land in 2b.
+// at a configurable speedup. Phase 2a shipped the HTTP dispatcher; Phase 2b
+// adds auth strategies + virtual-user fan-out with body mutators.
 syntax = "proto3";
 
 package clearvoiance.v1;
@@ -14,13 +14,69 @@ service ReplayService {
 
 message StartReplayRequest {
   string source_session_id = 1;
-  // Base URL the captured HTTP requests are redirected at.
-  // e.g. http://staging.internal:1337
   string target_url = 2;
-  // Dispatch-rate multiplier. 1.0 = original timing, 12.0 = 12x faster.
   double speedup = 3;
-  // Optional human label.
   string label = 4;
+
+  // How many virtual users to fan each captured event out to. 1 (or 0) = one
+  // dispatch per event (original behaviour). N = N dispatches per event, with
+  // the mutator applied at VU indices 0..N-1 so unique-field collisions
+  // (e.g. duplicate email) don't break the target.
+  int32 virtual_users = 5;
+
+  // Optional auth rewrite before dispatch. Unset = pass captured headers
+  // through unchanged.
+  AuthStrategy auth = 6;
+
+  // Optional body mutation per virtual user. Unset = pass bodies through
+  // unchanged.
+  MutatorConfig mutator = 7;
+}
+
+// AuthStrategy selects how to rewrite auth credentials on replayed requests.
+message AuthStrategy {
+  oneof strategy {
+    AuthNone none = 1;
+    AuthStaticSwap static_swap = 2;
+    AuthJwtResign jwt_resign = 3;
+  }
+}
+
+message AuthNone {}
+
+// Replaces the value of `header` with `token` on every dispatched request.
+// Simple escape hatch for staging replays that need a single long-lived token.
+message AuthStaticSwap {
+  string header = 1;  // defaults to "Authorization" when empty
+  string prefix = 2;  // e.g. "Bearer "
+  string token = 3;
+}
+
+// Re-signs HS256 JWTs from the named header with a fresh expiry, preserving
+// the original claims. Target must accept the signing_key on the replay side.
+message AuthJwtResign {
+  string header = 1;                 // defaults to "Authorization"
+  string prefix = 2;                 // e.g. "Bearer "
+  string signing_key = 3;            // HMAC secret
+  int64 fresh_expiry_seconds = 4;    // defaults to 3600 when <= 0
+}
+
+// MutatorConfig selects how to rewrite request bodies per virtual user.
+message MutatorConfig {
+  oneof mutator {
+    MutatorNone none = 1;
+    MutatorUniqueFields unique_fields = 2;
+  }
+}
+
+message MutatorNone {}
+
+// Appends a per-VU suffix to string fields matched by the given JSONPaths.
+// Email fields get a "+vu{idx}" tag inserted before the "@"; other strings
+// get "-vu{idx}" appended. Integers get "idx * int_multiplier" added.
+message MutatorUniqueFields {
+  repeated string json_paths = 1;    // e.g. ["$.email", "$.username"]
+  int64 int_multiplier = 2;          // for integer fields; defaults to 1_000_000
 }
 
 message StartReplayResponse {
