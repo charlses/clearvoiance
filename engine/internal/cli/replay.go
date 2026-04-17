@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -48,6 +49,10 @@ func newReplayStartCmd() *cobra.Command {
 		mutatorPaths     []string
 		mutatorIntMul    int64
 		mutatorScriptFile string
+
+		fromStr     string
+		toStr       string
+		durationStr string
 	)
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -59,7 +64,17 @@ func newReplayStartCmd() *cobra.Command {
 			if target == "" {
 				return errors.New("--target is required")
 			}
-			if speedup <= 0 {
+			fromNs, toNs, err := parseWindow(fromStr, toStr)
+			if err != nil {
+				return err
+			}
+			durationMs, err := parseDurationMs(durationStr)
+			if err != nil {
+				return err
+			}
+			// If user set --duration, leave speedup at 0 so the engine derives
+			// it from the filtered window. Otherwise default to 1x.
+			if durationMs == 0 && speedup <= 0 {
 				speedup = 1.0
 			}
 			engine, _ := cmd.Flags().GetString("engine")
@@ -84,13 +99,16 @@ func newReplayStartCmd() *cobra.Command {
 			}
 
 			resp, err := client.StartReplay(cmd.Context(), &pb.StartReplayRequest{
-				SourceSessionId: source,
-				TargetUrl:       target,
-				Speedup:         speedup,
-				Label:           label,
-				VirtualUsers:    virtualUsers,
-				Auth:            authMsg,
-				Mutator:         mutatorMsg,
+				SourceSessionId:     source,
+				TargetUrl:           target,
+				Speedup:             speedup,
+				Label:               label,
+				VirtualUsers:        virtualUsers,
+				Auth:                authMsg,
+				Mutator:             mutatorMsg,
+				WindowStartOffsetNs: fromNs,
+				WindowEndOffsetNs:   toNs,
+				TargetDurationMs:    durationMs,
 			})
 			if err != nil {
 				return err
@@ -129,7 +147,58 @@ func newReplayStartCmd() *cobra.Command {
 		"Amount added to integer fields per VU: value += vu * multiplier.")
 	cmd.Flags().StringVar(&mutatorScriptFile, "mutator-script-file", "",
 		"Path to a Starlark mutator script (expects 'def mutate(body, content_type, vu)').")
+
+	cmd.Flags().StringVar(&fromStr, "from", "",
+		"Start of replay window as offset from session start (e.g. '0s', '10m', '1h30m'). Default: session start.")
+	cmd.Flags().StringVar(&toStr, "to", "",
+		"End of replay window as offset from session start. Default: session end.")
+	cmd.Flags().StringVar(&durationStr, "duration", "",
+		"Target wall-clock duration for the filtered window (e.g. '5m'). When set, overrides --speedup.")
 	return cmd
+}
+
+// parseWindow parses --from / --to as Go durations. Empty strings map to 0
+// (= session start / open-ended end). Zero from + zero to = full session.
+func parseWindow(fromStr, toStr string) (int64, int64, error) {
+	parse := func(s, name string) (int64, error) {
+		if s == "" {
+			return 0, nil
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, fmt.Errorf("--%s: %w", name, err)
+		}
+		if d < 0 {
+			return 0, fmt.Errorf("--%s: must be non-negative", name)
+		}
+		return d.Nanoseconds(), nil
+	}
+	from, err := parse(fromStr, "from")
+	if err != nil {
+		return 0, 0, err
+	}
+	to, err := parse(toStr, "to")
+	if err != nil {
+		return 0, 0, err
+	}
+	if to > 0 && to <= from {
+		return 0, 0, fmt.Errorf("--to (%s) must be > --from (%s)", toStr, fromStr)
+	}
+	return from, to, nil
+}
+
+func parseDurationMs(s string) (int64, error) {
+	if s == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("--duration: %w", err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("--duration must be > 0")
+	}
+	return d.Milliseconds(), nil
 }
 
 func buildAuthStrategy(mode, header, prefix, token, signingKey string, fresh int64,

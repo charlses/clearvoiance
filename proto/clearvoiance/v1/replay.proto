@@ -31,6 +31,19 @@ message StartReplayRequest {
   // Optional body mutation per virtual user. Unset = pass bodies through
   // unchanged.
   MutatorConfig mutator = 7;
+
+  // Optional replay window (offsets from the session's first event, in ns).
+  // window_end_offset_ns = 0 means "through the end of the session".
+  // Events outside the window are filtered out before dispatch.
+  int64 window_start_offset_ns = 8;
+  int64 window_end_offset_ns = 9;
+
+  // Optional target wall-clock duration for the replay, in milliseconds.
+  // When set (> 0), speedup is COMPUTED as
+  //   speedup = (window_duration_ns) / (target_duration_ms * 1e6)
+  // and overrides the `speedup` field. Lets users say "replay this 1h window
+  // in 5 minutes" without doing the arithmetic themselves.
+  int64 target_duration_ms = 10;
 }
 
 // AuthStrategy selects how to rewrite auth credentials on replayed requests.

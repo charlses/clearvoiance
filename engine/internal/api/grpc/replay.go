@@ -38,19 +38,23 @@ func (s *ReplayServer) StartReplay(ctx context.Context, req *pb.StartReplayReque
 	if req.GetTargetUrl() == "" {
 		return nil, status.Error(codes.InvalidArgument, "target_url is required")
 	}
-	if req.GetSpeedup() <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "speedup must be > 0")
+	if req.GetSpeedup() <= 0 && req.GetTargetDurationMs() <= 0 {
+		return nil, status.Error(codes.InvalidArgument,
+			"either speedup or target_duration_ms must be > 0")
 	}
 
 	cfg := replay.Config{
-		ReplayID:        replay.NewReplayID(),
-		SourceSessionID: req.GetSourceSessionId(),
-		TargetURL:       req.GetTargetUrl(),
-		Speedup:         req.GetSpeedup(),
-		Label:           req.GetLabel(),
-		VirtualUsers:    int(req.GetVirtualUsers()),
-		Auth:            replay.AuthFromProto(req.GetAuth()),
-		Mutator:         replay.MutatorFromProto(req.GetMutator()),
+		ReplayID:         replay.NewReplayID(),
+		SourceSessionID:  req.GetSourceSessionId(),
+		TargetURL:        req.GetTargetUrl(),
+		Speedup:          req.GetSpeedup(),
+		Label:            req.GetLabel(),
+		VirtualUsers:     int(req.GetVirtualUsers()),
+		Auth:             replay.AuthFromProto(req.GetAuth()),
+		Mutator:          replay.MutatorFromProto(req.GetMutator()),
+		WindowStartNs:    req.GetWindowStartOffsetNs(),
+		WindowEndNs:      req.GetWindowEndOffsetNs(),
+		TargetDurationMs: req.GetTargetDurationMs(),
 	}
 
 	// Run in a background goroutine — don't block the RPC on the replay.

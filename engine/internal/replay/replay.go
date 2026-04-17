@@ -90,6 +90,16 @@ type Config struct {
 	Mutator Mutator
 	// Optional cap on how many dispatches run in parallel. 0 = unbounded.
 	MaxConcurrency int
+
+	// Optional time window (offsets from the first captured event, in ns).
+	// WindowEndNs = 0 means "to the end of the session".
+	WindowStartNs int64
+	WindowEndNs   int64
+
+	// When > 0, overrides Speedup such that the filtered window's wall-clock
+	// replay takes approximately this long. Example: "replay the 1h window in
+	// 5 minutes" → TargetDurationMs = 300_000.
+	TargetDurationMs int64
 }
 
 // Engine drives a replay end to end.
@@ -158,16 +168,25 @@ var ErrNoDispatcher = errors.New("no dispatcher for event")
 //  5. batches replay_events writes to ClickHouse
 //  6. writes a terminal 'completed' / 'failed' row with summary metrics
 func (e *Engine) Run(ctx context.Context, cfg Config) error {
-	if cfg.Speedup <= 0 {
-		return fmt.Errorf("speedup must be > 0, got %v", cfg.Speedup)
+	// Either an explicit speedup or a target duration must be given; the
+	// scheduler picks whichever is present and falls back to 1x if neither.
+	if cfg.Speedup <= 0 && cfg.TargetDurationMs <= 0 {
+		return fmt.Errorf("speedup or target_duration_ms must be > 0")
 	}
 	startedAt := time.Now().UTC()
 
+	// Record the input speedup; the actually-used (effective) speedup may be
+	// derived from TargetDurationMs once we know the window size, but we
+	// don't have that yet and Create() runs before the scheduler loop.
+	speedupForRow := cfg.Speedup
+	if speedupForRow <= 0 {
+		speedupForRow = 1.0 // placeholder for target-duration mode
+	}
 	if err := e.replays.Create(ctx, metadata.ReplayRow{
 		ID:              cfg.ReplayID,
 		SourceSessionID: cfg.SourceSessionID,
 		TargetURL:       cfg.TargetURL,
-		Speedup:         cfg.Speedup,
+		Speedup:         speedupForRow,
 		Label:           cfg.Label,
 		Status:          "running",
 		StartedAt:       startedAt,
@@ -228,6 +247,51 @@ func (e *Engine) run(ctx context.Context, cfg Config) (*summary, error) {
 		return buffered[i].GetTimestampNs() < buffered[j].GetTimestampNs()
 	})
 
+	// Window filter: keep events whose offset from the session start falls
+	// within [WindowStartNs, WindowEndNs]. WindowEndNs = 0 means open-ended.
+	sessionStart := buffered[0].GetTimestampNs()
+	if cfg.WindowStartNs > 0 || cfg.WindowEndNs > 0 {
+		filtered := buffered[:0]
+		for _, ev := range buffered {
+			off := ev.GetTimestampNs() - sessionStart
+			if off < cfg.WindowStartNs {
+				continue
+			}
+			if cfg.WindowEndNs > 0 && off > cfg.WindowEndNs {
+				continue
+			}
+			filtered = append(filtered, ev)
+		}
+		buffered = filtered
+		if len(buffered) == 0 {
+			e.log.Info("replay window selected zero events",
+				"replay_id", cfg.ReplayID,
+				"window_start_ns", cfg.WindowStartNs,
+				"window_end_ns", cfg.WindowEndNs,
+			)
+			return &summary{}, nil
+		}
+	}
+
+	// Effective speedup: if TargetDurationMs is set, compute so the filtered
+	// window maps to approximately that wall-clock duration.
+	effectiveSpeedup := cfg.Speedup
+	if cfg.TargetDurationMs > 0 && len(buffered) > 1 {
+		windowNs := buffered[len(buffered)-1].GetTimestampNs() - buffered[0].GetTimestampNs()
+		if windowNs > 0 {
+			effectiveSpeedup = float64(windowNs) / float64(cfg.TargetDurationMs*int64(time.Millisecond))
+			e.log.Info("replay speedup derived from target duration",
+				"replay_id", cfg.ReplayID,
+				"window_ns", windowNs,
+				"target_ms", cfg.TargetDurationMs,
+				"speedup", effectiveSpeedup,
+			)
+		}
+	}
+	if effectiveSpeedup <= 0 {
+		effectiveSpeedup = 1.0
+	}
+
 	baseTimestampNs := buffered[0].GetTimestampNs()
 	replayStart := time.Now()
 
@@ -271,7 +335,7 @@ func (e *Engine) run(ctx context.Context, cfg Config) (*summary, error) {
 	for _, ev := range buffered {
 		// Compute wall-clock target fire time.
 		offsetNs := ev.GetTimestampNs() - baseTimestampNs
-		fireAt := replayStart.Add(time.Duration(float64(offsetNs) / cfg.Speedup))
+		fireAt := replayStart.Add(time.Duration(float64(offsetNs) / effectiveSpeedup))
 		sleep := time.Until(fireAt)
 		if sleep > 0 {
 			select {
