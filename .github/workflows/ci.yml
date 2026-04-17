@@ -21,6 +21,7 @@ jobs:
       - uses: bufbuild/buf-action@v1
         with:
           version: 1.68.1
+          setup_only: true
       - run: buf lint
         working-directory: proto
       - name: check for breaking changes vs main
