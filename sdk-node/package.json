@@ -29,6 +29,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./http/express": {
+      "types": "./dist/adapters/http/express.d.ts",
+      "import": "./dist/adapters/http/express.js",
+      "require": "./dist/adapters/http/express.cjs"
     }
   },
   "files": [
@@ -49,7 +54,9 @@
     "node": ">=24"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^25.6.0",
+    "express": "^5.2.1",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
@@ -59,5 +66,11 @@
   "dependencies": {
     "@bufbuild/protobuf": "^2.11.0",
     "@grpc/grpc-js": "^1.14.3"
+  },
+  "peerDependencies": {
+    "express": ">=4.0.0 <6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "express": { "optional": true }
   }
 }

@@ -1,7 +1,10 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts"],
+  entry: {
+    index: "src/index.ts",
+    "adapters/http/express": "src/adapters/http/express.ts",
+  },
   format: ["esm", "cjs"],
   dts: true,
   sourcemap: true,
@@ -9,4 +12,6 @@ export default defineConfig({
   target: "node24",
   splitting: false,
   treeshake: true,
+  // Never bundle the SDK's own runtime deps or peer deps — users install them.
+  external: ["@grpc/grpc-js", "@bufbuild/protobuf", "express"],
 });

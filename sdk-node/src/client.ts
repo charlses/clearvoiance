@@ -11,8 +11,9 @@ import {
   type StreamEventsResponse,
 } from "./generated/clearvoiance/v1/capture.js";
 import type { Event } from "./generated/clearvoiance/v1/event.js";
+import { SDK_VERSION } from "./version.js";
 
-export const SDK_VERSION = "0.0.0-alpha.0";
+export { SDK_VERSION };
 
 export interface ClientConfig {
   engine: {
