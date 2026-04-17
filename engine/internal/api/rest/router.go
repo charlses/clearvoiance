@@ -16,16 +16,21 @@ import (
 // Deps is every dependency the REST handlers need. Passed in at wire-up so
 // tests can swap in Noop implementations without touching the router.
 type Deps struct {
-	Log             *slog.Logger
-	Version         string
-	ClickhouseDSN   string
-	SessionMgr      *sessions.Manager
-	EventStore      storage.EventStore
-	MetaStore       metadata.Store
-	ReplayEngine    *replay.Engine
+	Log           *slog.Logger
+	Version       string
+	ClickhouseDSN string
+	SessionMgr    *sessions.Manager
+	EventStore    storage.EventStore
+	MetaStore     metadata.Store
+	ReplayEngine  *replay.Engine
 	// AuditLogger is optional; wiring it in turns every write into an
 	// audit_log row. Can be nil in tests or when not desired.
 	AuditLogger AuditWriter
+	// Metrics is the counters exposed on /metrics. When non-nil it's also
+	// installed as request-counting middleware.
+	Metrics *MetricsRegistry
+	// Config is the read-only slice of runtime config surfaced on /config.
+	Config ConfigView
 }
 
 // Router builds the full REST surface. Mount under `/api/v1` on whatever
@@ -35,6 +40,9 @@ func Router(d Deps) http.Handler {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(recoverMiddleware(d.Log))
+	if d.Metrics != nil {
+		r.Use(MetricsMiddleware(d.Metrics))
+	}
 
 	// Unauthenticated operational endpoints.
 	r.Route("/api/v1", func(r chi.Router) {
@@ -42,6 +50,7 @@ func Router(d Deps) http.Handler {
 		r.Get("/health", h.health)
 		r.Get("/ready", h.ready)
 		r.Get("/version", h.version)
+		mountMetrics(r, d.Metrics)
 
 		// Everything else requires auth.
 		r.Group(func(r chi.Router) {
@@ -50,6 +59,7 @@ func Router(d Deps) http.Handler {
 				r.Use(AuditMiddleware(d.AuditLogger))
 			}
 
+			mountConfig(r, configViewFromDeps(d))
 			mountSessions(r, d)
 			mountReplays(r, d)
 			mountAPIKeys(r, d)
@@ -61,6 +71,23 @@ func Router(d Deps) http.Handler {
 	// into via /docs + /api/v1/openapi.json.
 	MountOpenAPI(r, d.Version)
 	return r
+}
+
+// configViewFromDeps merges runtime Deps into a ConfigView that mountConfig
+// then further redacts + serves.
+func configViewFromDeps(d Deps) ConfigView {
+	v := d.Config
+	v.Version = d.Version
+	if v.Clickhouse == "" {
+		v.Clickhouse = d.ClickhouseDSN
+	}
+	if v.Features == nil {
+		v.Features = map[string]bool{}
+	}
+	v.Features["db_observer_reads"] = d.ClickhouseDSN != ""
+	v.Features["replay_engine"] = d.ReplayEngine != nil
+	v.Features["audit_log"] = d.AuditLogger != nil
+	return v
 }
 
 // recoverMiddleware turns handler panics into 500s so one handler bug doesn't

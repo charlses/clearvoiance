@@ -35,6 +35,27 @@ type EventStore interface {
 	Close() error
 }
 
+// ReplayEventReader is an optional surface for the REST API to page through
+// replay_events rows for a given replay. Separate from EventStore so a
+// backend that can't support ad-hoc reads (e.g. a write-only cold store)
+// doesn't have to implement it — callers type-assert.
+type ReplayEventReader interface {
+	ReadReplayEvents(ctx context.Context, replayID string, limit int) ([]ReplayResultRow, error)
+}
+
+// SessionEventReader is an optional surface for /sessions/{id}/events. The
+// concrete impl (ClickHouse) returns up to `limit` events ordered by ts asc.
+type SessionEventReader interface {
+	ReadSessionEvents(ctx context.Context, sessionID string, limit int) ([]*pb.Event, error)
+}
+
+// DeleteSessionCapable lets the REST DELETE /sessions/{id} drop captured
+// events alongside the metadata row. Optional surface — backends without
+// deletion support just leave the events in place.
+type DeleteSessionCapable interface {
+	DeleteSession(ctx context.Context, sessionID string) error
+}
+
 // ReplayResultRow is the flat shape written per dispatched event. Columns
 // mirror the replay_events table in engine/internal/storage/clickhouse.
 type ReplayResultRow struct {

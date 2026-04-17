@@ -26,12 +26,26 @@
   - `Health_IsPublic`: no Bearer needed on `/health`.
 - **WebSocket** (4 tests) — real server, real upgrade: auth handshake required, subscribe→publish→receive, unsubscribe stops delivery, ping/pong.
 
-## Explicitly deferred
+## Gap-closure slice (2026-04-17, same day)
 
-- **Event-browser endpoints** (`GET /sessions/{id}/events` paginated browser). ClickHouse scan is straightforward but cursor pagination + filter syntax wants a dedicated slice.
-- **Import / export** (`POST /sessions/import`, `GET /sessions/:id/export`). Streaming tarball over HTTP is a surface-area investment; belongs with the OSS-launch tooling in Phase 8.
+The first pass shipped a core slice; the acceptance criteria required
+"all Phase 1+2+4 functionality is accessible via REST" and "WebSocket
+subscribers receive live events during an active capture." These gaps are
+now closed:
+
+- **Sessions**: added `DELETE /sessions/{id}` (drops both metadata + CH events via optional `DeleteSessionCapable`) and `GET /sessions/{id}/events` (paginated via `SessionEventReader`, one-page-at-a-time snapshot so the event browser in the UI has something to render).
+- **Replays**: added `GET /replays` (list with `status` + `limit` filters) + `GET /replays/{id}/events` (per-event dispatch results from `replay_events`). The list powers the UI's replay table.
+- **DB observations**: added `GET /replays/{id}/db/deadlocks` (surfaces `lock_wait` observations as a proxy until the full pg_locks graph lands) and `GET /replays/{id}/db/explain/{fingerprint}` (501 with a stable `note` pointing at the Phase-4 deferral so UI clients can render "not yet" without special-casing 404).
+- **Operations**: `GET /metrics` (Prometheus text format) + `GET /config` (read-only runtime config with DSN credentials redacted, same policy as the audit log). Metrics middleware counts every REST request by status class.
+- **WebSocket publisher**: replay engine now pushes 250ms progress snapshots onto `replay.<id>.progress` via the hub. Compile-time `_ replay.ProgressPublisher = (*Hub)(nil)` guards the interface so future renames don't silently detach the publisher. Final snapshot after scheduler exit carries `status: "finished"`.
+
+## Still explicitly deferred
+
+- **Import / export** (`POST /sessions/import`, `GET /sessions/{id}/export`). Streaming tarball over HTTP is a surface-area investment; belongs with the OSS-launch tooling in Phase 8.
 - **CLI refactor to REST.** The CLI still speaks gRPC — fine for v1 since the engine runs both side by side. Swapping to REST under the hood is additive and comes later.
-- **WebSocket topic fan-out from the engine** (`replay.{id}.progress` from the replay engine, `replay.{id}.db` from the observer). The hub exists and is pluggable; actually wiring publishers into the scheduler + observer loops is a polish pass.
+- **Further WebSocket topics** (`session.{id}.events`, `session.{id}.stats`, `replay.{id}.events`, `replay.{id}.db`). Hub infrastructure + replay progress is live; session-event fan-out from capture and replay-event publishing from the dispatcher are the next slice — the first sees thousands of events/sec so needs rate-limiting before going live.
+- **Full deadlock graph** endpoint wiring (requires `pg_locks` snapshot on deadlock — observer-side follow-up).
+- **EXPLAIN plan capture** endpoint data (requires observer auto_explain — Phase 4 follow-up).
 - **Rate limiting** per key. Single global limit via reverse proxy for now.
 
 ## Deliverables

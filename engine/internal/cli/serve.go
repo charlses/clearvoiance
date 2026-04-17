@@ -169,6 +169,11 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 	//   /hermetic/unmocked — hermetic-mode unmocked outbound log
 	//   /healthz   — bare liveness
 	wsHub := ws.NewHub(log)
+	// Wire progress publishing: every replay run pushes 250ms snapshots
+	// onto replay.<id>.progress for any WS subscribers.
+	replayEngine.SetProgressPublisher(wsHub)
+
+	metrics := rest.NewMetricsRegistry()
 	restDeps := rest.Deps{
 		Log:           log,
 		Version:       version,
@@ -178,6 +183,13 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 		MetaStore:     meta,
 		ReplayEngine:  replayEngine,
 		AuditLogger:   auditWriter(meta),
+		Metrics:       metrics,
+		Config: rest.ConfigView{
+			GRPCAddr: opts.grpcAddr,
+			HTTPAddr: opts.httpAddr,
+			Postgres: opts.postgresDSN,
+			MinIO:    opts.minioEndpoint,
+		},
 	}
 
 	root := chi.NewRouter()

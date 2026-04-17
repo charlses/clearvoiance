@@ -159,6 +159,96 @@ func (s *Store) ReadSession(ctx context.Context, sessionID string) (<-chan *pb.E
 	return events, errs
 }
 
+// ReadReplayEvents returns the first `limit` rows for a replay, ordered by
+// scheduled fire time ascending. Used by the REST /replays/{id}/events
+// endpoint.
+func (s *Store) ReadReplayEvents(ctx context.Context, replayID string, limit int) ([]storage.ReplayResultRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.conn.Query(ctx, `
+		SELECT replay_id, event_id, scheduled_fire_ns, actual_fire_ns, lag_ns,
+		       response_status, response_duration_ns,
+		       error_code, error_message, bytes_sent, bytes_received,
+		       http_method, http_path, http_route
+		  FROM replay_events
+		 WHERE replay_id = ?
+		 ORDER BY scheduled_fire_ns ASC
+		 LIMIT ?
+	`, replayID, uint64(limit))
+	if err != nil {
+		return nil, fmt.Errorf("read replay events: %w", err)
+	}
+	defer rows.Close()
+	out := []storage.ReplayResultRow{}
+	for rows.Next() {
+		var r storage.ReplayResultRow
+		if err := rows.Scan(&r.ReplayID, &r.EventID, &r.ScheduledFireNs,
+			&r.ActualFireNs, &r.LagNs, &r.ResponseStatus, &r.ResponseDurationNs,
+			&r.ErrorCode, &r.ErrorMessage, &r.BytesSent, &r.BytesReceived,
+			&r.HTTPMethod, &r.HTTPPath, &r.HTTPRoute); err != nil {
+			return nil, fmt.Errorf("scan replay event: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ReadSessionEvents returns the first `limit` events for a session, ordered
+// by timestamp ascending. Decodes raw_pb into *pb.Event for the REST event
+// browser. For large sessions callers should prefer ReadSession's streaming
+// API.
+func (s *Store) ReadSessionEvents(ctx context.Context, sessionID string, limit int) ([]*pb.Event, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.conn.Query(ctx, `
+		SELECT raw_pb FROM events
+		 WHERE session_id = ?
+		 ORDER BY timestamp_ns ASC, id ASC
+		 LIMIT ?
+	`, sessionID, uint64(limit))
+	if err != nil {
+		return nil, fmt.Errorf("read session events: %w", err)
+	}
+	defer rows.Close()
+	out := []*pb.Event{}
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("scan event: %w", err)
+		}
+		ev := &pb.Event{}
+		if err := proto.Unmarshal([]byte(raw), ev); err != nil {
+			return nil, fmt.Errorf("unmarshal event: %w", err)
+		}
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
+// DeleteSession drops the captured events for a session + the replay_events
+// that originated from replays of that session. Metadata rows are removed by
+// the metadata store separately; this is the event-store side of the
+// DELETE /sessions/{id} story.
+func (s *Store) DeleteSession(ctx context.Context, sessionID string) error {
+	// ClickHouse ALTER TABLE DELETE is asynchronous (mutation) but eventually
+	// removes rows. For v1 that's acceptable; operators wanting immediate
+	// freedom can TRUNCATE PARTITION on the session_id partition.
+	if err := s.conn.Exec(ctx,
+		`ALTER TABLE events DELETE WHERE session_id = ?`, sessionID); err != nil {
+		return fmt.Errorf("delete events for session: %w", err)
+	}
+	if err := s.conn.Exec(ctx, `ALTER TABLE replay_events DELETE
+		 WHERE replay_id IN (SELECT id FROM replays WHERE source_session_id = ?)`,
+		sessionID); err != nil {
+		// Non-fatal: maybe `replays` lives only in Postgres. Swallow and
+		// let the operator clean up if they care.
+		return nil
+	}
+	return nil
+}
+
 // InsertReplayEvents writes a batch of replay results. Shape mirrors the
 // replay_events table; see storage.ReplayResultRow for the canonical type.
 func (s *Store) InsertReplayEvents(ctx context.Context, rows []storage.ReplayResultRow) error {

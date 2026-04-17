@@ -36,6 +36,9 @@ type Sessions interface {
 	Get(ctx context.Context, id string) (*SessionRow, error)
 	MarkStopped(ctx context.Context, id string, stoppedAt time.Time, events, bytes int64) error
 	List(ctx context.Context) ([]SessionRow, error)
+	// Delete removes the session metadata row. Use the event store to drop
+	// the session's events separately; this call is just the metadata side.
+	Delete(ctx context.Context, id string) error
 	// Heartbeat records that the session is still alive. Used by the auto-close
 	// sweeper to distinguish live-but-quiet sessions from abandoned ones.
 	Heartbeat(ctx context.Context, id string) error
@@ -84,6 +87,9 @@ type Replays interface {
 	Get(ctx context.Context, id string) (*ReplayRow, error)
 	MarkFinished(ctx context.Context, id, status string, finishedAt time.Time,
 		metrics ReplayMetrics, errorMessage string) error
+	// List returns replays newest first, optionally filtered by status.
+	// An empty status matches all.
+	List(ctx context.Context, status string, limit int) ([]ReplayRow, error)
 }
 
 // APIKeyRow represents a provisioned API key. The plaintext is never stored
@@ -156,6 +162,7 @@ func (noopSessions) MarkStopped(_ context.Context, _ string, _ time.Time, _, _ i
 	return nil
 }
 func (noopSessions) List(_ context.Context) ([]SessionRow, error) { return nil, nil }
+func (noopSessions) Delete(_ context.Context, _ string) error     { return nil }
 func (noopSessions) Heartbeat(_ context.Context, _ string) error  { return nil }
 func (noopSessions) SweepIdle(_ context.Context, _ time.Duration) ([]string, error) {
 	return nil, nil
@@ -170,6 +177,9 @@ func (noopReplays) Get(_ context.Context, _ string) (*ReplayRow, error) {
 func (noopReplays) MarkFinished(_ context.Context, _, _ string, _ time.Time,
 	_ ReplayMetrics, _ string) error {
 	return nil
+}
+func (noopReplays) List(_ context.Context, _ string, _ int) ([]ReplayRow, error) {
+	return nil, nil
 }
 
 type noopAPIKeys struct{}

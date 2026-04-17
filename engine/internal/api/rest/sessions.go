@@ -1,13 +1,17 @@
 package rest
 
 import (
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"google.golang.org/protobuf/proto"
 
+	pb "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1"
 	"github.com/charlses/clearvoiance/engine/internal/sessions"
+	"github.com/charlses/clearvoiance/engine/internal/storage"
 	"github.com/charlses/clearvoiance/engine/internal/storage/metadata"
 )
 
@@ -23,18 +27,25 @@ type sessionView struct {
 }
 
 func mountSessions(r chi.Router, d Deps) {
-	h := &sessionHandler{mgr: d.SessionMgr, meta: d.MetaStore.Sessions()}
+	h := &sessionHandler{
+		mgr:        d.SessionMgr,
+		meta:       d.MetaStore.Sessions(),
+		eventStore: d.EventStore,
+	}
 	r.Route("/sessions", func(r chi.Router) {
 		r.Get("/", h.list)
 		r.Get("/{id}", h.get)
+		r.Delete("/{id}", h.delete)
 		r.Post("/{id}/stop", h.stop)
 		r.Get("/{id}/stats", h.stats)
+		r.Get("/{id}/events", h.events)
 	})
 }
 
 type sessionHandler struct {
-	mgr  *sessions.Manager
-	meta metadata.Sessions
+	mgr        *sessions.Manager
+	meta       metadata.Sessions
+	eventStore storage.EventStore
 }
 
 func (h *sessionHandler) list(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +137,107 @@ func (h *sessionHandler) stats(w http.ResponseWriter, r *http.Request) {
 		"bytes_captured":  row.BytesCaptured,
 		"started_at":      row.StartedAt.Format("2006-01-02T15:04:05.999Z07:00"),
 	})
+}
+
+func (h *sessionHandler) delete(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	// Best-effort event cleanup: only when the event store supports it.
+	// Metadata row is always removed below.
+	if del, ok := h.eventStore.(storage.DeleteSessionCapable); ok {
+		_ = del.DeleteSession(r.Context(), id)
+	}
+	if err := h.meta.Delete(r.Context(), id); err != nil {
+		if errors.Is(err, metadata.ErrSessionNotFound) {
+			WriteError(w, http.StatusNotFound, "SESSION_NOT_FOUND",
+				"Session "+id+" not found", nil)
+			return
+		}
+		WriteError(w, http.StatusInternalServerError, "INTERNAL",
+			"delete session: "+err.Error(), nil)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// events returns a page of captured events for a session. Bodies and raw
+// protobufs are base64-encoded; for browser-friendly viewing, use the UI
+// which renders them post-decode.
+func (h *sessionHandler) events(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	limit := intQuery(r, "limit", 100)
+
+	reader, ok := h.eventStore.(storage.SessionEventReader)
+	if !ok {
+		WriteJSON(w, http.StatusOK, map[string]any{
+			"session_id": id,
+			"events":     []any{},
+			"note":       "event store backend does not support session-event reads (running ephemerally?)",
+		})
+		return
+	}
+	events, err := reader.ReadSessionEvents(r.Context(), id, limit)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "INTERNAL",
+			"read events: "+err.Error(), nil)
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{
+		"session_id": id,
+		"events":     toEventViews(events),
+		"count":      len(events),
+	})
+}
+
+// eventView is a UI-friendlier envelope — core metadata pulled up, the full
+// encoded protobuf kept as base64 for clients that want everything.
+type eventView struct {
+	ID          string            `json:"id"`
+	TimestampNs int64             `json:"timestamp_ns"`
+	OffsetNs    int64             `json:"offset_ns"`
+	Adapter     string            `json:"adapter"`
+	EventType   string            `json:"event_type"`
+	HTTPMethod  string            `json:"http_method,omitempty"`
+	HTTPPath    string            `json:"http_path,omitempty"`
+	HTTPStatus  int32             `json:"http_status,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	RawPB       string            `json:"raw_pb_b64,omitempty"`
+}
+
+func toEventViews(events []*pb.Event) []eventView {
+	out := make([]eventView, 0, len(events))
+	for _, ev := range events {
+		view := eventView{
+			ID:          ev.GetId(),
+			TimestampNs: ev.GetTimestampNs(),
+			OffsetNs:    ev.GetOffsetNs(),
+			Adapter:     ev.GetAdapter(),
+			Metadata:    ev.GetMetadata(),
+		}
+		switch p := ev.GetPayload().(type) {
+		case *pb.Event_Http:
+			view.EventType = "http"
+			view.HTTPMethod = p.Http.GetMethod()
+			view.HTTPPath = p.Http.GetPath()
+			view.HTTPStatus = p.Http.GetStatus()
+		case *pb.Event_Socket:
+			view.EventType = "socket"
+		case *pb.Event_Cron:
+			view.EventType = "cron"
+		case *pb.Event_Webhook:
+			view.EventType = "webhook"
+		case *pb.Event_Queue:
+			view.EventType = "queue"
+		case *pb.Event_Outbound:
+			view.EventType = "outbound"
+		case *pb.Event_Db:
+			view.EventType = "db"
+		}
+		if raw, err := proto.Marshal(ev); err == nil {
+			view.RawPB = base64.StdEncoding.EncodeToString(raw)
+		}
+		out = append(out, view)
+	}
+	return out
 }
 
 func toSessionView(s metadata.SessionRow) sessionView {

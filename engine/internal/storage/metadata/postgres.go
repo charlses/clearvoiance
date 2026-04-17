@@ -174,6 +174,17 @@ func (s *pgSessions) SweepIdle(ctx context.Context, idle time.Duration) ([]strin
 	return ids, rows.Err()
 }
 
+func (s *pgSessions) Delete(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSessionNotFound
+	}
+	return nil
+}
+
 func (s *pgSessions) List(ctx context.Context) ([]SessionRow, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, name, labels, status, started_at, stopped_at,
@@ -301,6 +312,58 @@ func (r *pgReplays) MarkFinished(ctx context.Context, id, status string,
 		return ErrReplayNotFound
 	}
 	return nil
+}
+
+func (r *pgReplays) List(ctx context.Context, status string, limit int) ([]ReplayRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	query := `
+		SELECT id, source_session_id, target_url, speedup, label, status,
+		       started_at, finished_at, events_dispatched, events_failed,
+		       events_backpressured,
+		       p50_latency_ms, p95_latency_ms, p99_latency_ms, max_lag_ms,
+		       COALESCE(error_message, '')
+		  FROM replays
+	`
+	args := []any{}
+	if status != "" {
+		query += ` WHERE status = $1`
+		args = append(args, status)
+	}
+	query += ` ORDER BY started_at DESC`
+	if status != "" {
+		query += ` LIMIT $2`
+	} else {
+		query += ` LIMIT $1`
+	}
+	args = append(args, limit)
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []ReplayRow{}
+	for rows.Next() {
+		var o ReplayRow
+		var finishedAt *time.Time
+		var p50, p95, p99, maxLag *float64
+		if err := rows.Scan(&o.ID, &o.SourceSessionID, &o.TargetURL, &o.Speedup,
+			&o.Label, &o.Status, &o.StartedAt, &finishedAt,
+			&o.EventsDispatched, &o.EventsFailed, &o.EventsBackpressured,
+			&p50, &p95, &p99, &maxLag, &o.ErrorMessage); err != nil {
+			return nil, err
+		}
+		o.FinishedAt = finishedAt
+		o.P50LatencyMs = p50
+		o.P95LatencyMs = p95
+		o.P99LatencyMs = p99
+		o.MaxLagMs = maxLag
+		out = append(out, o)
+	}
+	return out, rows.Err()
 }
 
 // --- api_keys ---

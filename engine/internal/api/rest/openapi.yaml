@@ -5,6 +5,21 @@ info:
     REST API for the clearvoiance engine. Everything the CLI does is
     reachable here, plus DB-observation queries for the UI. See
     `plan/15-phase-5-control-plane.md` for the design.
+
+    ## WebSocket
+
+    Live updates run on a separate `ws://<host>/ws` endpoint (same port
+    as this REST surface). First message must be
+    `{"type":"auth","api_key":"..."}`; then `subscribe` / `unsubscribe` /
+    `ping` with a topic. Available topics today:
+
+    - `replay.<id>.progress` — snapshot every 250ms while a replay runs:
+      `{status, events_dispatched, events_failed, events_backpressured, observed_at_ns}`.
+      Final snapshot fires after the scheduler loop exits with `status: "finished"`.
+
+    Additional topics (`session.<id>.events`, `replay.<id>.events`,
+    `replay.<id>.db`) are planned; the hub supports them but no publisher
+    is wired yet.
   version: "${ENGINE_VERSION}"
 servers:
   - url: /api/v1
@@ -109,7 +124,34 @@ paths:
         "200": { description: ok }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /sessions/{id}/events:
+    get:
+      tags: [Sessions]
+      summary: Paginated event browser for a session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        "200": { description: ok }
+
   /replays:
+    get:
+      tags: [Replays]
+      summary: List replays
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, running, completed, failed, cancelled] }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        "200": { description: ok }
     post:
       tags: [Replays]
       summary: Start a replay
@@ -155,6 +197,53 @@ paths:
       responses:
         "202": { description: accepted }
         "404": { description: not running }
+
+  /replays/{id}/events:
+    get:
+      tags: [Replays]
+      summary: Per-event dispatch results from the replay_events table
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        "200": { description: ok }
+
+  /replays/{id}/db/deadlocks:
+    get:
+      tags: [DB Observations]
+      summary: Lock-wait observations (full pg_locks graph lands later)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        "200": { description: ok }
+
+  /replays/{id}/db/explain/{fingerprint}:
+    get:
+      tags: [DB Observations]
+      summary: Captured EXPLAIN plan for a query fingerprint (deferred)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: fingerprint
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "501":
+          description: auto_explain integration deferred; see plan/14
 
   /replays/{id}/db/top-slow-queries:
     get:
@@ -225,6 +314,25 @@ paths:
       responses:
         "204": { description: revoked }
         "404": { description: not found }
+
+  /metrics:
+    get:
+      tags: [Health]
+      summary: Prometheus text-format metrics
+      security: []
+      responses:
+        "200":
+          description: Prometheus exposition-format metrics
+          content:
+            text/plain: {}
+
+  /config:
+    get:
+      tags: [Health]
+      summary: Read-only runtime config (credentials redacted)
+      responses:
+        "200":
+          description: ok
 
 components:
   securitySchemes:

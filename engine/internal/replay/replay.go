@@ -102,6 +102,23 @@ type Config struct {
 	TargetDurationMs int64
 }
 
+// ProgressPublisher receives periodic progress snapshots during a replay.
+// Wired to the WebSocket hub in serve.go so `replay.{id}.progress`
+// subscribers see live updates. A no-op publisher is the zero value.
+type ProgressPublisher interface {
+	PublishReplayProgress(replayID string, snapshot ProgressSnapshot)
+}
+
+// ProgressSnapshot is one progress sample. ObservedAtNs is set by the
+// publisher wrapper so all callers see a consistent clock.
+type ProgressSnapshot struct {
+	Status              string  `json:"status"`
+	EventsDispatched    int64   `json:"events_dispatched"`
+	EventsFailed        int64   `json:"events_failed"`
+	EventsBackpressured int64   `json:"events_backpressured"`
+	ObservedAtNs        int64   `json:"observed_at_ns"`
+}
+
 // Engine drives a replay end to end.
 type Engine struct {
 	log         *slog.Logger
@@ -110,6 +127,7 @@ type Engine struct {
 	replays     metadata.Replays
 	blobs       BlobReader
 	dispatchers []Dispatcher
+	publisher   ProgressPublisher
 
 	// Running replays so CancelReplay can stop them.
 	mu      sync.Mutex
@@ -135,6 +153,28 @@ func NewEngine(
 		dispatchers: dispatchers,
 		running:     make(map[string]context.CancelFunc),
 	}
+}
+
+// SetProgressPublisher wires a publisher that receives periodic progress
+// snapshots. Safe to call after NewEngine and before Run; setting it to
+// nil disables publishing.
+func (e *Engine) SetProgressPublisher(p ProgressPublisher) {
+	e.publisher = p
+}
+
+// publishProgress is the single hook the scheduler loop calls. No-op when
+// no publisher is configured.
+func (e *Engine) publishProgress(replayID, status string, dispatched, failed, backpressured int64) {
+	if e.publisher == nil {
+		return
+	}
+	e.publisher.PublishReplayProgress(replayID, ProgressSnapshot{
+		Status:              status,
+		EventsDispatched:    dispatched,
+		EventsFailed:        failed,
+		EventsBackpressured: backpressured,
+		ObservedAtNs:        time.Now().UnixNano(),
+	})
 }
 
 // Cancel stops an in-flight replay run. Safe to call for unknown ids.
@@ -332,6 +372,38 @@ func (e *Engine) run(ctx context.Context, cfg Config) (*summary, error) {
 	var wg sync.WaitGroup
 	sum := &summary{}
 
+	// Periodic progress publisher. Runs alongside the scheduler loop and
+	// pushes current counters to every WS subscriber of
+	// replay.{id}.progress. Tick interval is 250ms per the plan; the
+	// publisher's Publish() is non-blocking (drops on slow clients) so
+	// this never back-pressures the scheduler.
+	progressDone := make(chan struct{})
+	if e.publisher != nil {
+		go func() {
+			defer close(progressDone)
+			tick := time.NewTicker(250 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-tick.C:
+					d, f, b := sum.snapshot()
+					e.publishProgress(cfg.ReplayID, "running", d, f, b)
+				}
+			}
+		}()
+	} else {
+		close(progressDone)
+	}
+	defer func() {
+		<-progressDone
+		// Final snapshot once everything settles so subscribers see the
+		// terminal counters before the replay row lands.
+		d, f, b := sum.snapshot()
+		e.publishProgress(cfg.ReplayID, "finished", d, f, b)
+	}()
+
 	for _, ev := range buffered {
 		// Compute wall-clock target fire time.
 		offsetNs := ev.GetTimestampNs() - baseTimestampNs
@@ -517,6 +589,14 @@ func (s *summary) recordSkipped() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.EventsDispatched++
+}
+
+// snapshot returns the current counters for publisher use. Safe to call
+// concurrently with record/recordBackpressured/recordSkipped.
+func (s *summary) snapshot() (dispatched, failed, backpressured int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.EventsDispatched, s.EventsFailed, s.EventsBackpressured
 }
 
 func (s *summary) metrics() metadata.ReplayMetrics {

@@ -62,6 +62,12 @@ func (s *stubReplays) MarkFinished(_ context.Context, _, status string, _ time.T
 	}
 	return nil
 }
+func (s *stubReplays) List(_ context.Context, _ string, _ int) ([]metadata.ReplayRow, error) {
+	if s.row == nil {
+		return nil, nil
+	}
+	return []metadata.ReplayRow{*s.row}, nil
+}
 
 // stubDispatcher fires instantly — exercises the scheduler, not the wire.
 type stubDispatcher struct{}

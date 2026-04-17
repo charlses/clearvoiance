@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/charlses/clearvoiance/engine/internal/replay"
+	"github.com/charlses/clearvoiance/engine/internal/storage"
 	"github.com/charlses/clearvoiance/engine/internal/storage/metadata"
 )
 
@@ -51,19 +52,23 @@ type startReplayResp struct {
 
 func mountReplays(r chi.Router, d Deps) {
 	h := &replayHandler{
-		engine:  d.ReplayEngine,
-		replays: d.MetaStore.Replays(),
+		engine:     d.ReplayEngine,
+		replays:    d.MetaStore.Replays(),
+		eventStore: d.EventStore,
 	}
 	r.Route("/replays", func(r chi.Router) {
+		r.Get("/", h.list)
 		r.Post("/", h.start)
 		r.Get("/{id}", h.get)
 		r.Post("/{id}/cancel", h.cancel)
+		r.Get("/{id}/events", h.events)
 	})
 }
 
 type replayHandler struct {
-	engine  *replay.Engine
-	replays metadata.Replays
+	engine     *replay.Engine
+	replays    metadata.Replays
+	eventStore storage.EventStore
 }
 
 func (h *replayHandler) start(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +119,50 @@ func (h *replayHandler) start(w http.ResponseWriter, r *http.Request) {
 		ID:        cfg.ReplayID,
 		Status:    "pending",
 		StartedAt: time.Now().UTC().Format("2006-01-02T15:04:05.999Z07:00"),
+	})
+}
+
+func (h *replayHandler) list(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	limit := intQuery(r, "limit", 100)
+	rows, err := h.replays.List(r.Context(), status, limit)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "INTERNAL",
+			"list replays: "+err.Error(), nil)
+		return
+	}
+	out := make([]replayView, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toReplayView(row))
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{
+		"replays": out,
+		"count":   len(out),
+	})
+}
+
+func (h *replayHandler) events(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	limit := intQuery(r, "limit", 100)
+	reader, ok := h.eventStore.(storage.ReplayEventReader)
+	if !ok {
+		WriteJSON(w, http.StatusOK, map[string]any{
+			"replay_id": id,
+			"events":    []any{},
+			"note":      "event store backend does not support replay-event reads (running ephemerally?)",
+		})
+		return
+	}
+	rows, err := reader.ReadReplayEvents(r.Context(), id, limit)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "INTERNAL",
+			"read replay events: "+err.Error(), nil)
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{
+		"replay_id": id,
+		"events":    rows,
+		"count":     len(rows),
 	})
 }
 

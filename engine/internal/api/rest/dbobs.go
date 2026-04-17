@@ -42,6 +42,8 @@ func mountDbObservations(r chi.Router, d Deps) {
 	r.Route("/replays/{id}/db", func(r chi.Router) {
 		r.Get("/top-slow-queries", h.topSlow)
 		r.Get("/by-endpoint", h.byEndpoint)
+		r.Get("/deadlocks", h.deadlocks)
+		r.Get("/explain/{fingerprint}", h.explain)
 	})
 }
 
@@ -175,6 +177,95 @@ func (h *dbObsHandler) byEndpoint(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"replay_id": id,
 		"rows":      out,
+	})
+}
+
+// deadlocks returns deadlock observations for a replay. Phase-4 core slice
+// ships lock_wait events; true deadlock detection (pg_locks graph on
+// deadlock_detected errors) is deferred — this endpoint returns an empty
+// array + a `deferred` note until the observer emits those records, so
+// the UI can render the panel as "no deadlocks observed" without special-
+// casing 404.
+func (h *dbObsHandler) deadlocks(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if h.dsn == "" {
+		WriteError(w, http.StatusServiceUnavailable, "DB_OBSERVER_UNAVAILABLE",
+			"engine has no ClickHouse DSN configured", nil)
+		return
+	}
+	conn, err := openCH(r.Context(), h.dsn)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
+		return
+	}
+	defer conn.Close()
+	if err := conn.Exec(r.Context(), bootstrapDbObservationsSchema); err != nil {
+		WriteError(w, http.StatusInternalServerError, "INTERNAL",
+			"ensure table: "+err.Error(), nil)
+		return
+	}
+
+	// Today: surface lock_wait observations as a proxy for deadlock
+	// investigation. When the full lock-graph work lands (observer follow-
+	// up), this endpoint gains the graph edges.
+	rows, err := conn.Query(r.Context(), `
+		SELECT event_id, query_fingerprint, any(query_text),
+		       count(), round(avg(duration_ns) / 1e6, 2),
+		       round(max(duration_ns) / 1e6, 2),
+		       any(wait_event_type), any(wait_event)
+		  FROM db_observations
+		 WHERE replay_id = ? AND observation_type = 'lock_wait'
+		 GROUP BY event_id, query_fingerprint
+		 ORDER BY count() DESC
+		 LIMIT ?
+	`, id, uint64(intQuery(r, "limit", 50)))
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "INTERNAL",
+			"query: "+err.Error(), nil)
+		return
+	}
+	defer rows.Close()
+
+	type lockWaitRow struct {
+		EventID          string  `json:"event_id"`
+		QueryFingerprint string  `json:"query_fingerprint"`
+		QueryText        string  `json:"query_text"`
+		Occurrences      uint64  `json:"occurrences"`
+		AvgMs            float64 `json:"avg_ms"`
+		MaxMs            float64 `json:"max_ms"`
+		WaitEventType    string  `json:"wait_event_type"`
+		WaitEvent        string  `json:"wait_event"`
+	}
+	out := []lockWaitRow{}
+	for rows.Next() {
+		var r lockWaitRow
+		if err := rows.Scan(&r.EventID, &r.QueryFingerprint, &r.QueryText,
+			&r.Occurrences, &r.AvgMs, &r.MaxMs,
+			&r.WaitEventType, &r.WaitEvent); err != nil {
+			WriteError(w, http.StatusInternalServerError, "INTERNAL",
+				"scan: "+err.Error(), nil)
+			return
+		}
+		out = append(out, r)
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{
+		"replay_id": id,
+		"rows":      out,
+		"note":      "full pg_locks deadlock graph lands with the observer log-tail follow-up; rows here are lock_wait observations as a proxy",
+	})
+}
+
+// explain returns the captured EXPLAIN plan for a query fingerprint. Until
+// the observer wires up auto_explain (deferred in Phase 4), this endpoint
+// returns 501 with a pointer so UI clients know not to poll.
+func (h *dbObsHandler) explain(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	fp := chi.URLParam(r, "fingerprint")
+	WriteJSON(w, http.StatusNotImplemented, map[string]any{
+		"replay_id":         id,
+		"query_fingerprint": fp,
+		"plan":              nil,
+		"note":              "EXPLAIN plan capture requires the observer's auto_explain integration (deferred in Phase 4); see plan/14-phase-4-db-observer.md",
 	})
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/charlses/clearvoiance/engine/internal/api/rest"
+	"github.com/charlses/clearvoiance/engine/internal/replay"
 	"github.com/charlses/clearvoiance/engine/internal/storage/metadata"
 )
 
@@ -37,6 +38,17 @@ func NewHub(log *slog.Logger) *Hub {
 		subscribers: make(map[string]map[*client]struct{}),
 	}
 }
+
+// PublishReplayProgress satisfies replay.ProgressPublisher. The replay
+// engine calls this on its progress ticker; we fan it out to every client
+// subscribed to `replay.<id>.progress`.
+func (h *Hub) PublishReplayProgress(replayID string, snapshot replay.ProgressSnapshot) {
+	h.Publish("replay."+replayID+".progress", snapshot)
+}
+
+// Compile-time assertion that *Hub satisfies replay.ProgressPublisher so a
+// breaking change in replay surfaces here rather than at serve.go wire-up.
+var _ replay.ProgressPublisher = (*Hub)(nil)
 
 // Publish sends a message to every client subscribed to `topic`. Returns
 // the number of clients reached. Drops messages silently on slow clients
