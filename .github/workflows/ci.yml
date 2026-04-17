@@ -42,6 +42,7 @@ jobs:
         uses: bufbuild/buf-action@v1
         with:
           version: 1.68.1
+          setup_only: true
       - run: buf generate
         working-directory: proto
       - run: go build ./...
@@ -70,6 +71,7 @@ jobs:
         uses: bufbuild/buf-action@v1
         with:
           version: 1.68.1
+          setup_only: true
       - run: buf generate
         working-directory: proto
       - run: pnpm --filter @clearvoiance/node typecheck
