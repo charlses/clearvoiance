@@ -15,17 +15,20 @@
  * const app = new Koa();
  * app.use(captureKoa(client));
  * ```
- *
- * Strapi users: see `@clearvoiance/node/http/strapi` for a wrapper that
- * matches Strapi's middleware factory convention.
  */
 
 import type { Context, Middleware, Next } from "koa";
 
 import { currentEventId, newEventId, runWithEvent } from "../../core/event-context.js";
+import {
+  CappedBuffer,
+  finalizeBody,
+  type BlobUploader,
+  type FinalizeResult,
+} from "../../core/http-body.js";
 import { DEFAULT_HEADER_DENY, type HeaderMatcher, redactHeaders } from "../../core/redaction.js";
 import type {
-  Body as PbBody,
+  BlobRef,
   Event as PbEvent,
   HttpEvent as PbHttpEvent,
 } from "../../generated/clearvoiance/v1/event.js";
@@ -33,17 +36,16 @@ import { SDK_VERSION } from "../../version.js";
 
 const ADAPTER_NAME = "http.koa";
 
-/**
- * Minimal shape captureKoa needs from a client. Matches `Client.sendBatch` but
- * keeps the middleware decoupled so tests can pass a recorder.
- */
 export interface EventSink {
   sendBatch(events: PbEvent[]): Promise<void>;
+  uploadBlob?(data: Buffer, opts?: { contentType?: string }): Promise<BlobRef>;
+  track?<T>(p: Promise<T>): Promise<T>;
 }
 
 export interface CaptureKoaOptions {
   sampleRate?: number;
   maxBodyInlineBytes?: number;
+  maxBodyBlobBytes?: number;
   redactHeaders?: HeaderMatcher[];
   userExtractor?: (ctx: Context) => string | undefined;
   onError?: (err: unknown) => void;
@@ -52,9 +54,15 @@ export interface CaptureKoaOptions {
 export function captureKoa(client: EventSink, opts: CaptureKoaOptions = {}): Middleware {
   const sampleRate = opts.sampleRate ?? 1.0;
   const maxInline = opts.maxBodyInlineBytes ?? 64 * 1024;
+  const maxBlob = opts.maxBodyBlobBytes ?? 10 * 1024 * 1024;
   const headerDeny = opts.redactHeaders ?? DEFAULT_HEADER_DENY;
   const userExtractor = opts.userExtractor;
   const onError = opts.onError ?? defaultOnError;
+
+  const uploader: BlobUploader | undefined = client.uploadBlob
+    ? { uploadBlob: client.uploadBlob.bind(client) }
+    : undefined;
+  const bufferCap = uploader ? maxBlob : maxInline;
 
   return async function clearvoianceKoaMiddleware(ctx: Context, next: Next): Promise<void> {
     if (sampleRate < 1.0 && Math.random() >= sampleRate) {
@@ -66,8 +74,7 @@ export function captureKoa(client: EventSink, opts: CaptureKoaOptions = {}): Mid
     const startHr = process.hrtime.bigint();
     const startWallNs = BigInt(Date.now()) * 1_000_000n;
 
-    // --- Request body tap (observer — does not consume the stream). ---
-    const reqBuf = new CappedBuffer(maxInline);
+    const reqBuf = new CappedBuffer(bufferCap);
     const onReqData = (chunk: Buffer | string): void => {
       reqBuf.push(toBuffer(chunk));
     };
@@ -75,11 +82,7 @@ export function captureKoa(client: EventSink, opts: CaptureKoaOptions = {}): Mid
     ctx.req.on("end", () => ctx.req.removeListener("data", onReqData));
     ctx.req.on("error", () => ctx.req.removeListener("data", onReqData));
 
-    // --- Response body tap via ctx.res.write/end wrap. ---
-    // ctx.body may be a string, Buffer, stream, or object; Koa internally
-    // serialises it through ctx.res.write/end so patching those catches
-    // every byte that actually goes on the wire.
-    const resBuf = new CappedBuffer(maxInline);
+    const resBuf = new CappedBuffer(bufferCap);
     const res = ctx.res;
     const origWrite = res.write.bind(res);
     const origEnd = res.end.bind(res);
@@ -95,21 +98,38 @@ export function captureKoa(client: EventSink, opts: CaptureKoaOptions = {}): Mid
     } as typeof res.end;
 
     res.on("finish", () => {
-      try {
-        const event = buildEvent({
-          eventId,
-          startWallNs,
-          durationNs: process.hrtime.bigint() - startHr,
-          ctx,
-          reqBody: reqBuf.result(headerString(ctx.request.header["content-type"])),
-          resBody: resBuf.result(headerString(ctx.response.header["content-type"])),
-          headerDeny,
-          userExtractor,
-        });
-        client.sendBatch([event]).catch(onError);
-      } catch (err) {
-        onError(err);
-      }
+      const task = (async (): Promise<void> => {
+        try {
+          const reqFinal = await finalizeBody(reqBuf, {
+            maxBodyInlineBytes: maxInline,
+            contentType: headerString(ctx.request.header["content-type"]),
+            uploader,
+            onBlobUploadError: onError,
+          });
+          const resFinal = await finalizeBody(resBuf, {
+            maxBodyInlineBytes: maxInline,
+            contentType: headerString(ctx.response.header["content-type"]),
+            uploader,
+            onBlobUploadError: onError,
+          });
+
+          const event = buildEvent({
+            eventId,
+            startWallNs,
+            durationNs: process.hrtime.bigint() - startHr,
+            ctx,
+            reqBody: reqFinal,
+            resBody: resFinal,
+            headerDeny,
+            userExtractor,
+          });
+
+          await client.sendBatch([event]);
+        } catch (err) {
+          onError(err);
+        }
+      })();
+      if (client.track) void client.track(task);
     });
 
     await runWithEvent({ eventId }, () => next());
@@ -123,8 +143,8 @@ interface BuildArgs {
   startWallNs: bigint;
   durationNs: bigint;
   ctx: Context;
-  reqBody: { body: PbBody | undefined; redactions: string[] };
-  resBody: { body: PbBody | undefined; redactions: string[] };
+  reqBody: FinalizeResult;
+  resBody: FinalizeResult;
   headerDeny: HeaderMatcher[];
   userExtractor?: (ctx: Context) => string | undefined;
 }
@@ -139,9 +159,6 @@ function buildEvent(a: BuildArgs): PbEvent {
     { headers: a.headerDeny },
   );
 
-  // Koa's routing is handled by user middleware (koa-router/@koa/router), which
-  // exposes the matched pattern via ctx._matchedRoute. Fall back to empty when
-  // no router is mounted.
   const routeTemplate =
     (a.ctx as Context & { _matchedRoute?: string | RegExp })._matchedRoute?.toString() ?? "";
 
@@ -180,44 +197,6 @@ function buildEvent(a: BuildArgs): PbEvent {
   };
 }
 
-class CappedBuffer {
-  private readonly cap: number;
-  private readonly chunks: Buffer[] = [];
-  private size = 0;
-  private _truncated = false;
-
-  constructor(cap: number) {
-    this.cap = cap;
-  }
-
-  push(buf: Buffer): void {
-    if (this._truncated || buf.length === 0) return;
-    if (this.size + buf.length <= this.cap) {
-      this.chunks.push(buf);
-      this.size += buf.length;
-      return;
-    }
-    const take = this.cap - this.size;
-    if (take > 0) this.chunks.push(buf.subarray(0, take));
-    this.size = this.cap;
-    this._truncated = true;
-  }
-
-  result(contentType: string | undefined): { body: PbBody | undefined; redactions: string[] } {
-    if (this.size === 0) {
-      return { body: undefined, redactions: [] };
-    }
-    const inline = Buffer.concat(this.chunks, this.size);
-    const body: PbBody = {
-      inline,
-      contentType: contentType ?? "",
-      sizeBytes: BigInt(this.size),
-      encoding: inferEncoding(contentType),
-    };
-    return { body, redactions: this._truncated ? ["body:truncated"] : [] };
-  }
-}
-
 function toBuffer(chunk: Buffer | string): Buffer {
   return Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
 }
@@ -226,17 +205,6 @@ function headerString(v: unknown): string | undefined {
   if (typeof v === "string") return v;
   if (Array.isArray(v) && typeof v[0] === "string") return v[0];
   return undefined;
-}
-
-function inferEncoding(contentType: string | undefined): string {
-  if (!contentType) return "binary";
-  if (
-    /charset=utf-8/i.test(contentType) ||
-    /^(text\/|application\/(json|xml|javascript))/i.test(contentType)
-  ) {
-    return "utf-8";
-  }
-  return "binary";
 }
 
 function defaultOnError(err: unknown): void {

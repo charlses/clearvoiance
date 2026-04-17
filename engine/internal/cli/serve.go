@@ -17,6 +17,7 @@ import (
 	pb "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1"
 	"github.com/charlses/clearvoiance/engine/internal/sessions"
 	"github.com/charlses/clearvoiance/engine/internal/storage"
+	"github.com/charlses/clearvoiance/engine/internal/storage/blob"
 	chstore "github.com/charlses/clearvoiance/engine/internal/storage/clickhouse"
 )
 
@@ -27,6 +28,14 @@ const defaultGRPCAddr = "127.0.0.1:9100"
 type serveOpts struct {
 	grpcAddr      string
 	clickhouseDSN string
+
+	// MinIO / S3
+	minioEndpoint  string
+	minioRegion    string
+	minioAccessKey string
+	minioSecretKey string
+	minioBucket    string
+	minioPathStyle bool
 }
 
 func newServeCmd(log *slog.Logger, version string) *cobra.Command {
@@ -49,7 +58,33 @@ func newServeCmd(log *slog.Logger, version string) *cobra.Command {
 		"ClickHouse DSN, e.g. clickhouse://default:dev@localhost:9000/clearvoiance. "+
 			"Leave empty to run in ephemeral (noop storage) mode.")
 
+	// Blob storage (S3-compatible). All empty → no blob backend, SDKs fall
+	// back to inline-or-truncate for large bodies.
+	cmd.Flags().StringVar(&opts.minioEndpoint, "minio-endpoint",
+		os.Getenv("CLEARVOIANCE_MINIO_ENDPOINT"),
+		"S3-compatible endpoint URL (e.g. http://minio:9000). Empty = disable blob storage.")
+	cmd.Flags().StringVar(&opts.minioRegion, "minio-region",
+		envOrDefault("CLEARVOIANCE_MINIO_REGION", "us-east-1"),
+		"S3 region.")
+	cmd.Flags().StringVar(&opts.minioAccessKey, "minio-access-key",
+		os.Getenv("CLEARVOIANCE_MINIO_ACCESS_KEY"), "S3 access key.")
+	cmd.Flags().StringVar(&opts.minioSecretKey, "minio-secret-key",
+		os.Getenv("CLEARVOIANCE_MINIO_SECRET_KEY"), "S3 secret key.")
+	cmd.Flags().StringVar(&opts.minioBucket, "minio-bucket",
+		envOrDefault("CLEARVOIANCE_MINIO_BUCKET", "clearvoiance-blobs"),
+		"Bucket blobs land in. Must already exist.")
+	cmd.Flags().BoolVar(&opts.minioPathStyle, "minio-path-style",
+		envOrDefault("CLEARVOIANCE_MINIO_PATH_STYLE", "true") == "true",
+		"Use path-style addressing (required for MinIO).")
+
 	return cmd
+}
+
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 func runServe(ctx context.Context, log *slog.Logger, version string, opts serveOpts) error {
@@ -64,7 +99,13 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 	}
 	defer func() { _ = store.Close() }()
 
-	capture := capturegrpc.NewCaptureServer(log, version, mgr, store)
+	blobs, err := openBlobStore(log, opts)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = blobs.Close() }()
+
+	capture := capturegrpc.NewCaptureServer(log, version, mgr, store, blobs)
 
 	lis, err := net.Listen("tcp", opts.grpcAddr)
 	if err != nil {
@@ -117,6 +158,24 @@ func openStore(ctx context.Context, log *slog.Logger, dsn string) (storage.Event
 	}
 	log.Info("connecting to ClickHouse", "dsn_host", redactDSN(dsn))
 	return chstore.Open(ctx, dsn)
+}
+
+// openBlobStore returns an S3-backed blob store when --minio-endpoint is set,
+// or a Noop store otherwise. With Noop, SDKs fall back to inline/truncate.
+func openBlobStore(log *slog.Logger, opts serveOpts) (blob.Store, error) {
+	if opts.minioEndpoint == "" {
+		log.Warn("no --minio-endpoint set — large bodies will be inlined up to the cap or truncated")
+		return blob.Noop{}, nil
+	}
+	log.Info("blob storage enabled", "endpoint", opts.minioEndpoint, "bucket", opts.minioBucket)
+	return blob.OpenS3(blob.S3Config{
+		Endpoint:     opts.minioEndpoint,
+		Region:       opts.minioRegion,
+		AccessKey:    opts.minioAccessKey,
+		SecretKey:    opts.minioSecretKey,
+		Bucket:       opts.minioBucket,
+		UsePathStyle: opts.minioPathStyle,
+	})
 }
 
 // redactDSN trims credentials from a DSN for safe logging.

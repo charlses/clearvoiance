@@ -34,7 +34,8 @@ async function main(): Promise<void> {
 
   const app = express();
   app.use(captureHttp(client));
-  app.use(express.json());
+  // Large limit so we can exercise the blob-upload path in the e2e smoke.
+  app.use(express.json({ limit: "10mb" }));
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true });

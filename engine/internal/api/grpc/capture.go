@@ -17,6 +17,7 @@ import (
 	pb "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1"
 	"github.com/charlses/clearvoiance/engine/internal/sessions"
 	"github.com/charlses/clearvoiance/engine/internal/storage"
+	"github.com/charlses/clearvoiance/engine/internal/storage/blob"
 )
 
 // serverVersion is stamped into HandshakeAck; filled by the caller.
@@ -27,7 +28,8 @@ const (
 )
 
 // CaptureServer implements pb.CaptureServiceServer. The session manager tracks
-// lifecycle + counters; the store persists event batches before they are acked.
+// lifecycle + counters; the event store persists batches before ack; the blob
+// store issues presigned URLs for large bodies uploaded directly by SDKs.
 type CaptureServer struct {
 	pb.UnimplementedCaptureServiceServer
 
@@ -35,12 +37,20 @@ type CaptureServer struct {
 	version string
 	mgr     *sessions.Manager
 	store   storage.EventStore
+	blobs   blob.Store
 }
 
-// NewCaptureServer wires a CaptureServer against a session manager and an
-// EventStore. Pass storage.Noop{} for in-memory dev smoke tests.
-func NewCaptureServer(log *slog.Logger, version string, mgr *sessions.Manager, store storage.EventStore) *CaptureServer {
-	return &CaptureServer{log: log, version: version, mgr: mgr, store: store}
+// NewCaptureServer wires a CaptureServer against a session manager, an
+// EventStore, and a blob.Store. Pass storage.Noop{} / blob.Noop{} for dev
+// smoke tests that don't need persistence.
+func NewCaptureServer(
+	log *slog.Logger,
+	version string,
+	mgr *sessions.Manager,
+	store storage.EventStore,
+	blobs blob.Store,
+) *CaptureServer {
+	return &CaptureServer{log: log, version: version, mgr: mgr, store: store, blobs: blobs}
 }
 
 // StartSession opens a new capture window.
@@ -83,6 +93,41 @@ func (s *CaptureServer) StopSession(_ context.Context, req *pb.StopSessionReques
 		StoppedAtNs:     sess.StoppedAt.UnixNano(),
 		EventsCaptured:  sess.EventsCaptured.Load(),
 		BytesCaptured:   sess.BytesCaptured.Load(),
+	}, nil
+}
+
+// GetBlobUploadURL returns a presigned PUT URL for large event bodies. The
+// SDK uploads directly to blob storage — bodies never traverse the engine.
+func (s *CaptureServer) GetBlobUploadURL(ctx context.Context, req *pb.GetBlobUploadURLRequest) (*pb.GetBlobUploadURLResponse, error) {
+	if _, err := s.mgr.Get(req.GetSessionId()); err != nil {
+		return nil, translateSessionErr(err)
+	}
+	if req.GetSha256() == "" {
+		return nil, status.Error(codes.InvalidArgument, "sha256 is required")
+	}
+	if req.GetSizeBytes() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "size_bytes must be > 0")
+	}
+
+	res, err := s.blobs.PresignPut(ctx, blob.PresignPutRequest{
+		SessionID:   req.GetSessionId(),
+		SHA256:      req.GetSha256(),
+		SizeBytes:   req.GetSizeBytes(),
+		ContentType: req.GetContentType(),
+	})
+	if err != nil {
+		if errors.Is(err, blob.ErrBlobNotConfigured) {
+			return nil, status.Error(codes.FailedPrecondition, "blob storage is not configured on this engine")
+		}
+		return nil, status.Errorf(codes.Internal, "presign put: %v", err)
+	}
+
+	return &pb.GetBlobUploadURLResponse{
+		UploadUrl:       res.UploadURL,
+		Bucket:          res.Bucket,
+		Key:             res.Key,
+		RequiredHeaders: res.RequiredHeaders,
+		ExpiresAtNs:     res.ExpiresAt.UnixNano(),
 	}, nil
 }
 
