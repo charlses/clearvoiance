@@ -1,7 +1,31 @@
 # Phase 6 — Frontend
 
-**Duration:** 2 weeks.
+**Status:** Core slice shipped 2026-04-17.
 **Goal:** A production-quality Next.js dashboard for the full clearvoiance workflow: create capture → monitor live → stop → configure replay → watch replay → analyze results.
+
+## What landed
+
+- **App shell** — Next.js 16 + React 19 + Tailwind 4 + shadcn-style primitives. Sidebar nav (dashboard / sessions / replays / settings), light + dark via `prefers-color-scheme`, Geist fonts.
+- **Auth** — API key stored in `localStorage`, read on every request; login page at `/login` probes `/api/v1/version` before redirecting. Auth gate (`useSyncExternalStore`) guards the whole `(authed)` route group.
+- **Typed API client** (`src/lib/api.ts`) hand-rolled over `fetch` — sessions, replays, api-keys, db-observations, health, metrics, config. Error envelope `{error:{code,message,details}}` mapped to `HTTPError`.
+- **WebSocket** — process-singleton client (`src/lib/ws.ts`) + `useWsTopic()` hook. Auth handshake + topic subscribe/unsubscribe with capped backoff on reconnect.
+- **Pages:**
+  - `/` (dashboard) — engine version, recent sessions, recent replays, refetched every 5–30s.
+  - `/sessions` list + `/sessions/[id]` detail with events browser (paginated via REST).
+  - `/replays` list + `/replays/[id]` detail. **Live progress via WS** — while status is `running`/`pending` the page subscribes to `replay.<id>.progress`, merges the 250ms snapshots over the REST row, and shows a "live" tag.
+  - `/replays/[id]/db` — top-slow-queries, by-endpoint rollup, lock-waits. Graceful fallback when the observer hasn't landed data.
+  - `/settings` — engine config (DSNs redacted) + API key CRUD with "copy once" workflow for freshly minted plaintext.
+- **Engine CORS** — loose origin policy on the REST router so the Next.js dev server at `:3100` can call the engine at `:9101` cross-origin. Documented as dev-friendly; production deploys should front with a reverse proxy.
+- **Playwright e2e** — full happy path (`tests/e2e/dashboard.spec.ts`): login → dashboard → sessions → replays → settings with `page.route()`-mocked engine. Runs against the production Next.js build, Playwright's `webServer` starts it. Wired into CI as a new `ui-e2e` job.
+
+## Explicitly deferred
+
+- **Event browser virtualization** (`@tanstack/virtual`) — current detail page paginates server-side with `limit=50`, fine until someone needs scrollback on a 1M-event session.
+- **New session / new replay forms** — still kicked off via SDK / CLI in v1; UI forms come next.
+- **Live session view** (`/sessions/[id]/live`) with streaming events. Needs the hub to publish `session.{id}.events`; deferred there too (high-rate, needs rate limiting).
+- **DB flame graph + lock graph + EXPLAIN plan viewer** — table views ship today; d3 visualizations follow when the observer emits the full lock graph and auto_explain plans (Phase 4 follow-ups).
+- **Theming toggle** — respects `prefers-color-scheme`, no explicit user toggle yet.
+- **Sessions bulk actions + export + import** — v2.
 
 ## Deliverables
 

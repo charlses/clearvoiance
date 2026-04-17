@@ -40,6 +40,7 @@ func Router(d Deps) http.Handler {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(recoverMiddleware(d.Log))
+	r.Use(corsMiddleware())
 	if d.Metrics != nil {
 		r.Use(MetricsMiddleware(d.Metrics))
 	}
