@@ -49,6 +49,11 @@
       "types": "./dist/adapters/socket/socketio.d.ts",
       "import": "./dist/adapters/socket/socketio.js",
       "require": "./dist/adapters/socket/socketio.cjs"
+    },
+    "./cron/node-cron": {
+      "types": "./dist/adapters/cron/node-cron.d.ts",
+      "import": "./dist/adapters/cron/node-cron.js",
+      "require": "./dist/adapters/cron/node-cron.cjs"
     }
   },
   "files": [
@@ -72,8 +77,10 @@
     "@types/express": "^5.0.6",
     "@types/koa": "^3.0.2",
     "@types/node": "^25.6.0",
+    "@types/node-cron": "^3.0.11",
     "express": "^5.2.1",
     "koa": "^3.2.0",
+    "node-cron": "^4.2.1",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "tsup": "^8.5.1",
@@ -89,11 +96,13 @@
   "peerDependencies": {
     "express": ">=4.0.0 <6.0.0",
     "koa": ">=2.0.0 <4.0.0",
-    "socket.io": ">=4.0.0 <5.0.0"
+    "socket.io": ">=4.0.0 <5.0.0",
+    "node-cron": ">=3.0.0 <5.0.0"
   },
   "peerDependenciesMeta": {
     "express": { "optional": true },
     "koa": { "optional": true },
-    "socket.io": { "optional": true }
+    "socket.io": { "optional": true },
+    "node-cron": { "optional": true }
   }
 }

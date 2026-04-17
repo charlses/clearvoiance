@@ -1,0 +1,21 @@
+{
+  "name": "@clearvoiance/example-cron-basic",
+  "version": "0.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal node-cron worker wired up with @clearvoiance/node capture.",
+  "scripts": {
+    "dev": "tsx src/worker.ts",
+    "start": "tsx src/worker.ts"
+  },
+  "dependencies": {
+    "@clearvoiance/node": "workspace:*",
+    "node-cron": "^4.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}

@@ -7,6 +7,7 @@ export default defineConfig({
     "adapters/http/koa": "src/adapters/http/koa.ts",
     "adapters/http/strapi": "src/adapters/http/strapi.ts",
     "adapters/socket/socketio": "src/adapters/socket/socketio.ts",
+    "adapters/cron/node-cron": "src/adapters/cron/node-cron.ts",
   },
   format: ["esm", "cjs"],
   dts: true,
@@ -16,5 +17,12 @@ export default defineConfig({
   splitting: false,
   treeshake: true,
   // Never bundle the SDK's own runtime deps or peer deps — users install them.
-  external: ["@grpc/grpc-js", "@bufbuild/protobuf", "express", "koa", "socket.io"],
+  external: [
+    "@grpc/grpc-js",
+    "@bufbuild/protobuf",
+    "express",
+    "koa",
+    "socket.io",
+    "node-cron",
+  ],
 });
