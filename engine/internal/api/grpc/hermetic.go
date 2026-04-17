@@ -53,7 +53,7 @@ func (s *HermeticServer) GetMockPack(
 		stream.Context(),
 		s.store,
 		sessionID,
-		func(entry *pb.MockEntry) error {
+		func(entry *pb.GetMockPackResponse) error {
 			emitted++
 			return stream.Send(entry)
 		},

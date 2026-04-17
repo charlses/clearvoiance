@@ -23,7 +23,7 @@ import { credentials, type ClientReadableStream } from "@grpc/grpc-js";
 
 import {
   HermeticServiceClient,
-  type MockEntry as PbMockEntry,
+  type GetMockPackResponse as PbMockEntry,
 } from "../generated/clearvoiance/v1/hermetic.js";
 
 import {

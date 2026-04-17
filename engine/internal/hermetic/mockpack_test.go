@@ -56,8 +56,8 @@ func TestBuildMockPack_EmitsOneEntryPerOutbound(t *testing.T) {
 		},
 	}
 
-	var collected []*pb.MockEntry
-	err := BuildMockPack(context.Background(), reader, "sess_test", func(e *pb.MockEntry) error {
+	var collected []*pb.GetMockPackResponse
+	err := BuildMockPack(context.Background(), reader, "sess_test", func(e *pb.GetMockPackResponse) error {
 		collected = append(collected, e)
 		return nil
 	})
@@ -90,7 +90,7 @@ func TestBuildMockPack_SkipsNonOutboundEvents(t *testing.T) {
 		},
 	}
 	var count int
-	err := BuildMockPack(context.Background(), reader, "sess", func(*pb.MockEntry) error {
+	err := BuildMockPack(context.Background(), reader, "sess", func(*pb.GetMockPackResponse) error {
 		count++
 		return nil
 	})

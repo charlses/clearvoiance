@@ -8,9 +8,9 @@ syntax = "proto3";
 package clearvoiance.v1;
 
 service HermeticService {
-  // Streams captured OutboundEvents for a session. The SDK indexes them by
-  // (caused_by_event_id, signature) on its side.
-  rpc GetMockPack(GetMockPackRequest) returns (stream MockEntry);
+  // Streams captured OutboundEvents for a session. The SDK indexes each
+  // response by (caused_by_event_id, signature) on its side.
+  rpc GetMockPack(GetMockPackRequest) returns (stream GetMockPackResponse);
 }
 
 message GetMockPackRequest {
@@ -22,7 +22,7 @@ message GetMockPackRequest {
 // and the canonical signature of the outbound request. The SDK computes the
 // signature on the live call at replay time; the engine computes it on the
 // captured call at export time so both sides agree.
-message MockEntry {
+message GetMockPackResponse {
   string caused_by_event_id = 1;
   string signature = 2;
   int32 status = 3;

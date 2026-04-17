@@ -22,7 +22,7 @@ func BuildMockPack(
 	ctx context.Context,
 	store EventReader,
 	sessionID string,
-	emit func(*pb.MockEntry) error,
+	emit func(*pb.GetMockPackResponse) error,
 ) error {
 	events, errs := store.ReadSession(ctx, sessionID)
 	if events == nil {
@@ -60,7 +60,7 @@ func BuildMockPack(
 
 // entryFromEvent builds a MockEntry from a captured OutboundEvent. Returns
 // (nil, false) for non-outbound events.
-func entryFromEvent(ev *pb.Event) (*pb.MockEntry, bool) {
+func entryFromEvent(ev *pb.Event) (*pb.GetMockPackResponse, bool) {
 	outbound := ev.GetOutbound()
 	if outbound == nil {
 		return nil, false
@@ -94,7 +94,7 @@ func entryFromEvent(ev *pb.Event) (*pb.MockEntry, bool) {
 		resHeaders[k] = &pb.HeaderValuesM{Values: v.GetValues()}
 	}
 
-	return &pb.MockEntry{
+	return &pb.GetMockPackResponse{
 		CausedByEventId:     outbound.GetCausedByEventId(),
 		Signature:           sig,
 		Status:              httpEv.GetStatus(),
