@@ -61,10 +61,17 @@ docker run -d --rm --name "$CH_CONTAINER" \
   clickhouse/clickhouse-server:24-alpine >/dev/null
 
 echo "→ waiting for ClickHouse"
+ready=0
 for _ in $(seq 1 60); do
-  if curl -fs -u default:dev "$CH_HTTP_URL/ping" >/dev/null 2>&1; then break; fi
+  if curl -fs -u default:dev "$CH_HTTP_URL/ping" >/dev/null 2>&1; then
+    ready=1; break
+  fi
   sleep 1
 done
+if [[ "$ready" -ne 1 ]]; then
+  echo "✗ ClickHouse did not become ready in 60s"
+  exit 1
+fi
 
 echo "→ building engine"
 go build -o "$ENGINE_BIN" ./engine/cmd/clearvoiance

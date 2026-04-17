@@ -52,13 +52,14 @@ if [[ -n "$with_clickhouse" ]]; then
     clickhouse/clickhouse-server:24-alpine >/dev/null
 
   echo "→ waiting for ClickHouse"
+  ready=0
   for _ in $(seq 1 60); do
     if curl -fs -u "default:dev" "http://127.0.0.1:18123/ping" >/dev/null 2>&1; then
-      break
+      ready=1; break
     fi
     sleep 1
   done
-  if ! curl -fs -u "default:dev" "http://127.0.0.1:18123/ping" >/dev/null 2>&1; then
+  if [[ "$ready" -ne 1 ]]; then
     echo "✗ ClickHouse did not become ready in 60s"
     exit 1
   fi

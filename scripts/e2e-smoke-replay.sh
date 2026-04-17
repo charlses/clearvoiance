@@ -66,13 +66,18 @@ docker run -d --rm --name "$PG_CONTAINER" \
   postgres:16-alpine >/dev/null
 
 echo "→ waiting for ClickHouse + Postgres"
+ready=0
 for _ in $(seq 1 60); do
   if curl -fs -u default:dev "$CH_HTTP_URL/ping" >/dev/null 2>&1 \
      && docker exec "$PG_CONTAINER" pg_isready -U clv -d clv >/dev/null 2>&1; then
-    break
+    ready=1; break
   fi
   sleep 1
 done
+if [[ "$ready" -ne 1 ]]; then
+  echo "✗ ClickHouse + Postgres did not become ready in 60s"
+  exit 1
+fi
 
 echo "→ building engine"
 go build -o "$ENGINE_BIN" ./engine/cmd/clearvoiance

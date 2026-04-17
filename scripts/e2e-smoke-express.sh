@@ -70,22 +70,30 @@ docker run -d --rm --name "$MINIO_CONTAINER" \
   server /data --console-address ":9001" >/dev/null
 
 echo "→ waiting for ClickHouse"
+ready=0
 for _ in $(seq 1 60); do
-  if curl -fs -u default:dev "$CH_HTTP_URL/ping" >/dev/null 2>&1; then break; fi
+  if curl -fs -u default:dev "$CH_HTTP_URL/ping" >/dev/null 2>&1; then
+    ready=1; break
+  fi
   sleep 1
 done
-curl -fs -u default:dev "$CH_HTTP_URL/ping" >/dev/null || {
-  echo "✗ ClickHouse did not become ready"; exit 1;
-}
+if [[ "$ready" -ne 1 ]]; then
+  echo "✗ ClickHouse did not become ready in 60s"
+  exit 1
+fi
 
 echo "→ waiting for MinIO"
+ready=0
 for _ in $(seq 1 60); do
-  if curl -fs "$MINIO_ENDPOINT/minio/health/live" >/dev/null 2>&1; then break; fi
+  if curl -fs "$MINIO_ENDPOINT/minio/health/live" >/dev/null 2>&1; then
+    ready=1; break
+  fi
   sleep 1
 done
-curl -fs "$MINIO_ENDPOINT/minio/health/live" >/dev/null || {
-  echo "✗ MinIO did not become ready"; exit 1;
-}
+if [[ "$ready" -ne 1 ]]; then
+  echo "✗ MinIO did not become ready in 60s"
+  exit 1
+fi
 
 echo "→ creating bucket via mc-in-container"
 docker run --rm --network host \

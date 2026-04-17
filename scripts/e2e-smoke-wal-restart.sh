@@ -70,15 +70,22 @@ docker run -d --rm --name "$PG_CONTAINER" \
   postgres:16-alpine >/dev/null
 
 echo "→ waiting for ClickHouse + Postgres"
+# Sentinel-style wait: if the in-loop check passes we set `ready=1` and break.
+# Running the same curl/pg_isready under `set -e` after the loop has a race
+# window — a service can flicker ready → not-ready between the loop exit and
+# the re-check, nuking the run with no output.
+ready=0
 for _ in $(seq 1 60); do
   if curl -fs -u default:dev "$CH_HTTP_URL/ping" >/dev/null 2>&1 \
      && docker exec "$PG_CONTAINER" pg_isready -U clv -d clv >/dev/null 2>&1; then
-    break
+    ready=1; break
   fi
   sleep 1
 done
-curl -fs -u default:dev "$CH_HTTP_URL/ping" >/dev/null
-docker exec "$PG_CONTAINER" pg_isready -U clv -d clv >/dev/null
+if [[ "$ready" -ne 1 ]]; then
+  echo "✗ ClickHouse + Postgres did not become ready in 60s"
+  exit 1
+fi
 
 echo "→ building engine"
 go build -o "$ENGINE_BIN" ./engine/cmd/clearvoiance
