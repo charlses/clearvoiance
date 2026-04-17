@@ -1,0 +1,22 @@
+{
+  "name": "@clearvoiance/example-socketio-basic",
+  "version": "0.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal Socket.io server wired up with @clearvoiance/node capture.",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "start": "tsx src/server.ts",
+    "smoke:client": "tsx src/smoke-client.ts"
+  },
+  "dependencies": {
+    "@clearvoiance/node": "workspace:*",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}

@@ -125,6 +125,34 @@ jobs:
       # and asserts rows land as http.express events with correct method/path.
       - run: bash scripts/e2e-smoke-express.sh
 
+  e2e-socketio:
+    name: e2e socket.io adapter (engine + ClickHouse + examples/socketio-basic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache-dependency-path: "**/go.sum"
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: regenerate proto bindings
+        uses: bufbuild/buf-action@v1
+        with:
+          version: 1.68.1
+          setup_only: true
+      - run: buf generate
+        working-directory: proto
+      # Runs the Socket.io example + smoke client against engine+ClickHouse
+      # and asserts CONNECT/RECV/EMIT/DISCONNECT rows land with correct ops.
+      - run: bash scripts/e2e-smoke-socketio.sh
+
   sdk-check:
     name: sdk-node build + test + typecheck
     runs-on: ubuntu-latest
