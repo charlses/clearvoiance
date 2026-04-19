@@ -254,7 +254,18 @@ export interface EventView {
   event_type: string;
   http_method?: string;
   http_path?: string;
+  http_route?: string;
   http_status?: number;
+  request_headers?: Record<string, string[]>;
+  response_headers?: Record<string, string[]>;
+  request_body_preview?: string;
+  request_body_size?: number;
+  request_body_truncated?: boolean;
+  response_body_preview?: string;
+  response_body_size?: number;
+  response_body_truncated?: boolean;
+  source_ip?: string;
+  user_id?: string;
   metadata?: Record<string, string>;
   raw_pb_b64?: string;
 }

@@ -12,8 +12,16 @@ export function THead({ className, ...props }: React.HTMLAttributes<HTMLTableSec
   return <thead className={cn("bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground", className)} {...props} />;
 }
 
-export function TRow(props: React.HTMLAttributes<HTMLTableRowElement>) {
-  return <tr className="border-b border-border last:border-0 hover:bg-muted/30" {...props} />;
+export function TRow({ className, ...props }: React.HTMLAttributes<HTMLTableRowElement>) {
+  return (
+    <tr
+      className={cn(
+        "border-b border-border last:border-0 hover:bg-muted/30",
+        className,
+      )}
+      {...props}
+    />
+  );
 }
 
 export function TH({ className, ...props }: React.ThHTMLAttributes<HTMLTableCellElement>) {

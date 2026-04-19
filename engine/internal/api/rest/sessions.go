@@ -226,10 +226,33 @@ type eventView struct {
 	EventType   string            `json:"event_type"`
 	HTTPMethod  string            `json:"http_method,omitempty"`
 	HTTPPath    string            `json:"http_path,omitempty"`
+	HTTPRoute   string            `json:"http_route,omitempty"`
 	HTTPStatus  int32             `json:"http_status,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	RawPB       string            `json:"raw_pb_b64,omitempty"`
+	// Full request / response headers, lowercased, repeated values
+	// preserved. Present only for http events. Nil on other event types
+	// so the JSON stays compact.
+	RequestHeaders  map[string][]string `json:"request_headers,omitempty"`
+	ResponseHeaders map[string][]string `json:"response_headers,omitempty"`
+	// Body previews: UTF-8-decoded first N bytes of inline bodies, or
+	// the empty string when the body was offloaded to blob / wasn't
+	// captured. Size tracks total captured size (not just preview).
+	RequestBodyPreview   string `json:"request_body_preview,omitempty"`
+	RequestBodySize      int64  `json:"request_body_size,omitempty"`
+	RequestBodyTruncated bool   `json:"request_body_truncated,omitempty"`
+	ResponseBodyPreview   string `json:"response_body_preview,omitempty"`
+	ResponseBodySize      int64  `json:"response_body_size,omitempty"`
+	ResponseBodyTruncated bool   `json:"response_body_truncated,omitempty"`
+	SourceIP string `json:"source_ip,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
+
+	Metadata map[string]string `json:"metadata,omitempty"`
+	RawPB    string            `json:"raw_pb_b64,omitempty"`
 }
+
+// bodyPreviewBytes caps the preview size we inline in the REST response
+// so the events-list response doesn't balloon when bodies are large.
+// Full bodies remain in the raw_pb_b64 for clients that want them.
+const bodyPreviewBytes = 4 * 1024
 
 func toEventViews(events []*pb.Event) []eventView {
 	out := make([]eventView, 0, len(events))
@@ -246,8 +269,21 @@ func toEventViews(events []*pb.Event) []eventView {
 			view.EventType = "http"
 			view.HTTPMethod = p.Http.GetMethod()
 			view.HTTPPath = p.Http.GetPath()
+			view.HTTPRoute = p.Http.GetRouteTemplate()
 			view.HTTPStatus = p.Http.GetStatus()
 			view.DurationNs = p.Http.GetDurationNs()
+			view.SourceIP = p.Http.GetSourceIp()
+			view.UserID = p.Http.GetUserId()
+			view.RequestHeaders = flattenHeaders(p.Http.GetHeaders())
+			view.ResponseHeaders = flattenHeaders(p.Http.GetResponseHeaders())
+			preview, size, trunc := bodyPreview(p.Http.GetRequestBody())
+			view.RequestBodyPreview = preview
+			view.RequestBodySize = size
+			view.RequestBodyTruncated = trunc
+			preview, size, trunc = bodyPreview(p.Http.GetResponseBody())
+			view.ResponseBodyPreview = preview
+			view.ResponseBodySize = size
+			view.ResponseBodyTruncated = trunc
 		case *pb.Event_Socket:
 			view.EventType = "socket"
 			view.DurationNs = p.Socket.GetDurationNs()
@@ -303,4 +339,49 @@ func intQuery(r *http.Request, name string, def int) int {
 		return def
 	}
 	return n
+}
+
+// flattenHeaders turns the proto's `map<string, HeaderValues>` into a
+// plain `map[string][]string` that round-trips cleanly through JSON —
+// easier for dashboard consumers than a two-level shape.
+func flattenHeaders(in map[string]*pb.HeaderValues) map[string][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for k, v := range in {
+		if v == nil {
+			continue
+		}
+		out[k] = v.GetValues()
+	}
+	return out
+}
+
+// bodyPreview returns (utf-8 preview, total captured size, truncated?).
+// Inline bodies get UTF-8-decoded up to bodyPreviewBytes; blob-offloaded
+// bodies return ("", size, true) since we don't auto-fetch the blob for
+// the preview. Callers who need the full body should read raw_pb_b64 or
+// call the blob endpoint directly.
+func bodyPreview(b *pb.Body) (string, int64, bool) {
+	if b == nil {
+		return "", 0, false
+	}
+	size := b.GetSizeBytes()
+	switch data := b.GetData().(type) {
+	case *pb.Body_Inline:
+		raw := data.Inline
+		if len(raw) == 0 {
+			return "", size, false
+		}
+		if len(raw) > bodyPreviewBytes {
+			return string(raw[:bodyPreviewBytes]), size, true
+		}
+		return string(raw), size, false
+	case *pb.Body_Blob:
+		// Body was offloaded — no preview, truncated = true so the UI
+		// can show "[blob, N bytes — not previewed]".
+		return "", size, true
+	}
+	return "", size, false
 }

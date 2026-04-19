@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { PlayCircle } from "lucide-react";
-import { use, useState } from "react";
+import React, { use, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -113,9 +113,20 @@ interface CapturedEvent {
   event_type: string;
   http_method?: string;
   http_path?: string;
+  http_route?: string;
   http_status?: number;
   timestamp_ns: number;
   duration_ns?: number;
+  request_headers?: Record<string, string[]>;
+  response_headers?: Record<string, string[]>;
+  request_body_preview?: string;
+  request_body_size?: number;
+  request_body_truncated?: boolean;
+  response_body_preview?: string;
+  response_body_size?: number;
+  response_body_truncated?: boolean;
+  source_ip?: string;
+  user_id?: string;
 }
 
 function EventsPanel({
@@ -178,10 +189,12 @@ function EventsPanel({
 }
 
 function EventsList({ events }: { events: CapturedEvent[] }) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   return (
     <Table>
       <THead>
         <TRow>
+          <TH />
           <TH>Type</TH>
           <TH>Method</TH>
           <TH>Path</TH>
@@ -191,22 +204,158 @@ function EventsList({ events }: { events: CapturedEvent[] }) {
         </TRow>
       </THead>
       <tbody>
-        {events.map((e) => (
-          <TRow key={e.id}>
-            <TD className="capitalize text-muted-foreground">{e.event_type}</TD>
-            <TD className="font-mono">{e.http_method ?? "—"}</TD>
-            <TD className="font-mono text-xs">{e.http_path ?? "—"}</TD>
-            <TD className="text-right font-mono">{e.http_status ?? "—"}</TD>
-            <TD className="text-right font-mono">
-              {e.duration_ns ? nsToMs(e.duration_ns) : "—"}
-            </TD>
-            <TD className="font-mono text-xs text-muted-foreground">
-              {e.id.slice(0, 12)}
-            </TD>
-          </TRow>
-        ))}
+        {events.map((e) => {
+          const open = expandedId === e.id;
+          const toggle = () => setExpandedId(open ? null : e.id);
+          return (
+            <React.Fragment key={e.id}>
+              <TRow
+                className="cursor-pointer hover:bg-muted/30"
+                onClick={toggle}
+              >
+                <TD className="w-6 text-muted-foreground">
+                  {open ? "▾" : "▸"}
+                </TD>
+                <TD className="capitalize text-muted-foreground">
+                  {e.event_type}
+                </TD>
+                <TD className="font-mono">{e.http_method ?? "—"}</TD>
+                <TD className="font-mono text-xs">{e.http_path ?? "—"}</TD>
+                <TD className="text-right font-mono">
+                  {e.http_status ?? "—"}
+                </TD>
+                <TD className="text-right font-mono">
+                  {e.duration_ns ? nsToMs(e.duration_ns) : "—"}
+                </TD>
+                <TD className="font-mono text-xs text-muted-foreground">
+                  {e.id.slice(0, 12)}
+                </TD>
+              </TRow>
+              {open && (
+                <TRow>
+                  <TD colSpan={7} className="bg-muted/10 p-4">
+                    <EventDetails event={e} />
+                  </TD>
+                </TRow>
+              )}
+            </React.Fragment>
+          );
+        })}
       </tbody>
     </Table>
+  );
+}
+
+function EventDetails({ event: e }: { event: CapturedEvent }) {
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <div>
+        <div className="mb-1 flex items-baseline justify-between">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Request
+          </h3>
+          {e.source_ip ? (
+            <span className="font-mono text-xs text-muted-foreground">
+              from {e.source_ip}
+            </span>
+          ) : null}
+        </div>
+        {e.http_route && e.http_route !== e.http_path ? (
+          <div className="mb-2 text-xs">
+            <span className="text-muted-foreground">route template: </span>
+            <span className="font-mono">{e.http_route}</span>
+          </div>
+        ) : null}
+        <HeaderBlock label="Headers" headers={e.request_headers} />
+        <BodyBlock
+          label="Body"
+          preview={e.request_body_preview}
+          size={e.request_body_size}
+          truncated={e.request_body_truncated}
+        />
+      </div>
+      <div>
+        <div className="mb-1 flex items-baseline justify-between">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Response
+          </h3>
+          <span className="font-mono text-xs">
+            {e.http_status ?? "—"}{" "}
+            {e.duration_ns ? `· ${nsToMs(e.duration_ns)}` : ""}
+          </span>
+        </div>
+        <HeaderBlock label="Headers" headers={e.response_headers} />
+        <BodyBlock
+          label="Body"
+          preview={e.response_body_preview}
+          size={e.response_body_size}
+          truncated={e.response_body_truncated}
+        />
+      </div>
+    </div>
+  );
+}
+
+function HeaderBlock({
+  label,
+  headers,
+}: {
+  label: string;
+  headers?: Record<string, string[]>;
+}) {
+  const entries = headers ? Object.entries(headers) : [];
+  return (
+    <details open className="group mb-3 rounded-md border border-border">
+      <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-muted-foreground group-open:border-b group-open:border-border">
+        {label} ({entries.length})
+      </summary>
+      {entries.length === 0 ? (
+        <div className="px-3 py-2 text-xs text-muted-foreground">—</div>
+      ) : (
+        <dl className="divide-y divide-border font-mono text-xs">
+          {entries.map(([k, values]) => (
+            <div key={k} className="flex gap-2 px-3 py-1.5">
+              <dt className="shrink-0 text-muted-foreground">{k}:</dt>
+              <dd className="min-w-0 break-all">{values.join(", ")}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </details>
+  );
+}
+
+function BodyBlock({
+  label,
+  preview,
+  size,
+  truncated,
+}: {
+  label: string;
+  preview?: string;
+  size?: number;
+  truncated?: boolean;
+}) {
+  const hasBody = (size ?? 0) > 0;
+  return (
+    <details open={!!preview} className="group rounded-md border border-border">
+      <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-muted-foreground group-open:border-b group-open:border-border">
+        {label}
+        {hasBody ? ` (${fmtBytes(size ?? 0)})` : ""}
+        {truncated ? " — preview only" : ""}
+      </summary>
+      {!hasBody ? (
+        <div className="px-3 py-2 text-xs text-muted-foreground">—</div>
+      ) : !preview ? (
+        <div className="px-3 py-2 text-xs text-muted-foreground">
+          [blob, {fmtBytes(size ?? 0)} — not previewed]
+        </div>
+      ) : (
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all px-3 py-2 font-mono text-xs">
+          {preview}
+        </pre>
+      )}
+    </details>
   );
 }
 
