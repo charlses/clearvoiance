@@ -126,11 +126,92 @@ type APIKeys interface {
 	Count(ctx context.Context) (int64, error)
 }
 
+// UserRow is the persisted shape of a dashboard user. The password_hash is
+// the full PHC-encoded argon2id string (e.g. `$argon2id$v=19$m=...$<salt>$<hash>`)
+// so the verify step can read the params off the string without any side
+// config. Emails are stored lowercased.
+type UserRow struct {
+	ID           string
+	Email        string
+	PasswordHash string
+	Role         string // v1: always "admin"
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	LastLoginAt  *time.Time
+}
+
+// ErrUserNotFound is returned for unknown user ids / emails, and for
+// unknown-or-expired login attempts.
+var ErrUserNotFound = errors.New("user not found")
+
+// Users is the ops surface for dashboard login accounts. Auth is
+// email+password; session lifecycle is a separate surface (UserSessions).
+type Users interface {
+	// Create inserts a user row. The caller is responsible for producing
+	// the argon2id PHC-string `passwordHash`. Returns ErrUserAlreadyExists
+	// when the email is taken.
+	Create(ctx context.Context, row UserRow) error
+	// GetByEmail returns (nil, ErrUserNotFound) if the email isn't
+	// registered; otherwise the full row including password_hash.
+	GetByEmail(ctx context.Context, email string) (*UserRow, error)
+	// GetByID returns (nil, ErrUserNotFound) on miss.
+	GetByID(ctx context.Context, id string) (*UserRow, error)
+	// UpdatePassword rotates the stored hash and bumps updated_at.
+	UpdatePassword(ctx context.Context, id, passwordHash string) error
+	// TouchLogin records a successful login for auditing / last-login UX.
+	TouchLogin(ctx context.Context, id string, at time.Time) error
+	// Count reports how many users exist. The /auth/setup handler refuses
+	// unless count==0, so this is the gate on first-run bootstrap.
+	Count(ctx context.Context) (int64, error)
+}
+
+// ErrUserAlreadyExists is returned by Users.Create on a duplicate email.
+var ErrUserAlreadyExists = errors.New("user already exists")
+
+// UserSessionRow is the persisted shape of a dashboard login session.
+// The plaintext token is never stored — only the sha256 hex hash.
+type UserSessionRow struct {
+	ID          string
+	UserID      string
+	TokenHash   string
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+	LastSeenAt  time.Time
+	UserAgent   string
+	IP          string
+}
+
+// ErrUserSessionNotFound is returned for expired, revoked, or unknown
+// session tokens.
+var ErrUserSessionNotFound = errors.New("user session not found")
+
+// UserSessions manages dashboard login sessions. Unlike API keys (which
+// never expire except via revoke), sessions have a hard expiry window and
+// get refreshed on activity.
+type UserSessions interface {
+	// Create inserts a new session row. Caller supplies the sha256 hash of
+	// the opaque token it just handed to the client via cookie.
+	Create(ctx context.Context, row UserSessionRow) error
+	// Lookup returns (nil, ErrUserSessionNotFound) if the token hash is
+	// unknown or expired; otherwise bumps last_seen_at and returns the row.
+	Lookup(ctx context.Context, tokenHash string) (*UserSessionRow, error)
+	// Revoke deletes the session by id. Used on logout.
+	Revoke(ctx context.Context, id string) error
+	// RevokeAllForUser deletes every session owned by a user. Used when
+	// password changes (so stolen cookies immediately stop working).
+	RevokeAllForUser(ctx context.Context, userID string) error
+	// DeleteExpired garbage-collects expired rows. Run periodically from a
+	// background sweeper in the serve loop.
+	DeleteExpired(ctx context.Context) (int64, error)
+}
+
 // Store is the umbrella for every relational surface the engine needs.
 type Store interface {
 	Sessions() Sessions
 	Replays() Replays
 	APIKeys() APIKeys
+	Users() Users
+	UserSessions() UserSessions
 	Close() error
 }
 
@@ -148,6 +229,16 @@ func (Noop) Replays() Replays { return noopReplays{} }
 // APIKeys returns a noop APIKeys implementation. Count=0 keeps the engine
 // in dev-open mode (any non-empty key accepted).
 func (Noop) APIKeys() APIKeys { return noopAPIKeys{} }
+
+// Users returns a noop Users implementation. Count=0 means setup is always
+// available; Create/GetByEmail/GetByID all fail so the dashboard stays
+// locked out until a real Postgres is wired up.
+func (Noop) Users() Users { return noopUsers{} }
+
+// UserSessions returns a noop UserSessions implementation — Lookup always
+// misses, so session-cookie auth is always 401 under Noop. Real deploys
+// must configure Postgres.
+func (Noop) UserSessions() UserSessions { return noopUserSessions{} }
 
 // Close is a no-op.
 func (Noop) Close() error { return nil }
@@ -191,3 +282,26 @@ func (noopAPIKeys) ValidateHash(_ context.Context, _ string) (*APIKeyRow, error)
 func (noopAPIKeys) Revoke(_ context.Context, _ string) error     { return nil }
 func (noopAPIKeys) List(_ context.Context) ([]APIKeyRow, error)  { return nil, nil }
 func (noopAPIKeys) Count(_ context.Context) (int64, error)       { return 0, nil }
+
+type noopUsers struct{}
+
+func (noopUsers) Create(_ context.Context, _ UserRow) error       { return nil }
+func (noopUsers) GetByEmail(_ context.Context, _ string) (*UserRow, error) {
+	return nil, ErrUserNotFound
+}
+func (noopUsers) GetByID(_ context.Context, _ string) (*UserRow, error) {
+	return nil, ErrUserNotFound
+}
+func (noopUsers) UpdatePassword(_ context.Context, _, _ string) error     { return nil }
+func (noopUsers) TouchLogin(_ context.Context, _ string, _ time.Time) error { return nil }
+func (noopUsers) Count(_ context.Context) (int64, error)                   { return 0, nil }
+
+type noopUserSessions struct{}
+
+func (noopUserSessions) Create(_ context.Context, _ UserSessionRow) error { return nil }
+func (noopUserSessions) Lookup(_ context.Context, _ string) (*UserSessionRow, error) {
+	return nil, ErrUserSessionNotFound
+}
+func (noopUserSessions) Revoke(_ context.Context, _ string) error         { return nil }
+func (noopUserSessions) RevokeAllForUser(_ context.Context, _ string) error { return nil }
+func (noopUserSessions) DeleteExpired(_ context.Context) (int64, error)   { return 0, nil }

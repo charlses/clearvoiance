@@ -58,10 +58,45 @@ CREATE TABLE IF NOT EXISTS api_keys (
 
 CREATE INDEX IF NOT EXISTS api_keys_revoked_idx ON api_keys (revoked_at);
 
+-- Dashboard users. Passwords are argon2id-hashed (PHC string format). v1 is
+-- single-admin: the first visit to /setup creates the sole user, after which
+-- /setup refuses until the row is deleted. Email is case-insensitive, stored
+-- lowercased.
+CREATE TABLE IF NOT EXISTS users (
+    id             TEXT PRIMARY KEY,
+    email          TEXT NOT NULL UNIQUE,
+    password_hash  TEXT NOT NULL,
+    role           TEXT NOT NULL DEFAULT 'admin',
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_login_at  TIMESTAMPTZ
+);
+
+-- Dashboard login sessions. Tokens are opaque 32-byte randoms; only sha256
+-- hashes land here (same one-way pattern as api_keys so a DB leak doesn't
+-- grant login access). The cookie carries the plaintext.
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id            TEXT PRIMARY KEY,
+    user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash    TEXT NOT NULL UNIQUE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at    TIMESTAMPTZ NOT NULL,
+    last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    user_agent    TEXT NOT NULL DEFAULT '',
+    ip            TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS user_sessions_user_idx    ON user_sessions (user_id);
+CREATE INDEX IF NOT EXISTS user_sessions_expires_idx ON user_sessions (expires_at);
+
 -- Audit log for every REST API write (POST/PUT/PATCH/DELETE). The middleware
 -- in engine/internal/api/rest/audit.go inserts here after each 2xx/3xx
 -- response. GETs are not audited. Payloads are redacted for secret-ish keys
 -- (token/password/secret/api_key) before persistence.
+--
+-- The actor columns cover both auth paths: api_key_id is set on Bearer-authed
+-- requests (SDK / programmatic), user_id on session-cookie requests
+-- (dashboard). Exactly one is populated per row.
 CREATE TABLE IF NOT EXISTS audit_log (
     id           UUID PRIMARY KEY,
     ts           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -73,5 +108,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
     source_ip    TEXT
 );
 
-CREATE INDEX IF NOT EXISTS audit_log_ts_idx  ON audit_log (ts DESC);
-CREATE INDEX IF NOT EXISTS audit_log_key_idx ON audit_log (api_key_id, ts DESC);
+-- Idempotent upgrades for audit_log: api_key_id becomes nullable so
+-- session-authed writes can leave it blank, and user_id is added for the
+-- dashboard actor.
+ALTER TABLE audit_log ALTER COLUMN api_key_id DROP NOT NULL;
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS user_id TEXT;
+
+CREATE INDEX IF NOT EXISTS audit_log_ts_idx   ON audit_log (ts DESC);
+CREATE INDEX IF NOT EXISTS audit_log_key_idx  ON audit_log (api_key_id, ts DESC);
+CREATE INDEX IF NOT EXISTS audit_log_user_idx ON audit_log (user_id, ts DESC);

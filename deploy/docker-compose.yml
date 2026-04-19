@@ -120,6 +120,11 @@ services:
       CLEARVOIANCE_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-devdevdev}
       CLEARVOIANCE_MINIO_BUCKET: ${MINIO_BUCKET:-clearvoiance-blobs}
       CLEARVOIANCE_MINIO_PATH_STYLE: ${MINIO_PATH_STYLE:-true}
+      # Dashboard session cookie + CORS. Empty defaults work for
+      # loopback deploys; set for split-subdomain production.
+      CLEARVOIANCE_COOKIE_DOMAIN: ${CLEARVOIANCE_COOKIE_DOMAIN:-}
+      CLEARVOIANCE_COOKIE_SECURE: ${CLEARVOIANCE_COOKIE_SECURE:-false}
+      CLEARVOIANCE_DASHBOARD_ORIGIN: ${CLEARVOIANCE_DASHBOARD_ORIGIN:-}
     command: >
       serve
       --grpc-addr 0.0.0.0:9100

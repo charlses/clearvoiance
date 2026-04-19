@@ -14,44 +14,39 @@ import (
 type contextKey string
 
 const (
-	// apiKeyRowCtxKey holds the validated APIKeyRow on authenticated requests.
+	// apiKeyRowCtxKey holds the validated APIKeyRow on Bearer-authed requests.
 	apiKeyRowCtxKey contextKey = "clv.apiKeyRow"
-	// devOpenCtxKey is set to true when auth passed under dev-open (no keys).
-	devOpenCtxKey contextKey = "clv.devOpen"
 )
 
-// AuthMiddleware validates `Authorization: Bearer <key>` against the metadata
-// store. Dev-open: when no keys are provisioned yet, accepts any non-empty
-// Bearer value — same policy as the gRPC side, so bootstrapping from zero
-// keys doesn't require a side channel.
+// AuthMiddleware enforces that every /api/v1/* request carries EITHER:
+//   - a valid session cookie (resolved upstream by SessionMiddleware), OR
+//   - a valid `Authorization: Bearer <api_key>` header.
+//
+// The dashboard uses the cookie path; SDKs and any programmatic client
+// continue to use Bearer. A request can carry both — cookie wins for the
+// actor-identity attached to audit rows, but either alone is enough to
+// pass auth.
+//
+// There is no dev-open mode. First-run bootstrap happens via
+// /api/v1/auth/setup, which is mounted outside this middleware.
 func AuthMiddleware(keys metadata.APIKeys) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Skip auth on unauthenticated endpoints — the router mounts this
-			// middleware only on /api/v1/* so health/docs/root aren't gated.
+			// Session cookie path (already resolved by SessionMiddleware).
+			if UserFromCtx(r.Context()) != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Bearer API key path.
 			token := extractBearer(r)
 			if token == "" {
 				WriteError(w, http.StatusUnauthorized, "UNAUTHENTICATED",
-					"Authorization: Bearer <api_key> is required", nil)
+					"session cookie or Authorization: Bearer <api_key> required", nil)
 				return
 			}
 
-			ctx := r.Context()
-			count, err := keys.Count(ctx)
-			if err != nil {
-				// Fail open on transient metadata errors so a Postgres
-				// hiccup doesn't 500 every request. Mirrors the gRPC path.
-				ctx = context.WithValue(ctx, devOpenCtxKey, true)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-			if count == 0 {
-				ctx = context.WithValue(ctx, devOpenCtxKey, true)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-
-			row, err := keys.ValidateHash(ctx, HashAPIKey(token))
+			row, err := keys.ValidateHash(r.Context(), HashAPIKey(token))
 			if err != nil {
 				if errors.Is(err, metadata.ErrAPIKeyNotFound) {
 					WriteError(w, http.StatusUnauthorized, "UNAUTHENTICATED",
@@ -62,10 +57,25 @@ func AuthMiddleware(keys metadata.APIKeys) func(http.Handler) http.Handler {
 					"validate api key: "+err.Error(), nil)
 				return
 			}
-			ctx = context.WithValue(ctx, apiKeyRowCtxKey, row)
+			ctx := context.WithValue(r.Context(), apiKeyRowCtxKey, row)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// RequireUser is a stricter gate than AuthMiddleware: the request MUST be
+// session-cookie-authenticated (not Bearer). Used for endpoints that only
+// make sense for a human dashboard user, like /auth/me and
+// /auth/change-password.
+func RequireUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if UserFromCtx(r.Context()) == nil {
+			WriteError(w, http.StatusUnauthorized, "UNAUTHENTICATED",
+				"session cookie required", nil)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // extractBearer grabs the token from `Authorization: Bearer <token>`.
@@ -88,16 +98,15 @@ func HashAPIKey(plaintext string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// APIKeyFromCtx returns the validated row for the current request, or nil in
-// dev-open mode.
+// APIKeyFromCtx returns the validated row for the current request, or nil
+// when the request was session-cookie-authenticated.
 func APIKeyFromCtx(ctx context.Context) *metadata.APIKeyRow {
 	v, _ := ctx.Value(apiKeyRowCtxKey).(*metadata.APIKeyRow)
 	return v
 }
 
-// IsDevOpen reports whether the current request was authenticated in
-// dev-open mode (any non-empty key accepted because no keys exist yet).
-func IsDevOpen(ctx context.Context) bool {
-	v, _ := ctx.Value(devOpenCtxKey).(bool)
-	return v
-}
+// IsDevOpen is retained as a compatibility shim — always false now that
+// dev-open is gone. Callers (a couple of tests + the audit writer) should
+// be migrated off it, but keeping the symbol prevents an API break
+// mid-refactor.
+func IsDevOpen(_ context.Context) bool { return false }

@@ -13,11 +13,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// AuditEntry is one row in the audit_log table.
+// AuditEntry is one row in the audit_log table. Exactly one of APIKeyID /
+// UserID is set per row, depending on which auth path the request came
+// through. Both can be "" only on dev paths without audit wiring.
 type AuditEntry struct {
 	ID         string
 	Timestamp  time.Time
 	APIKeyID   string
+	UserID     string
 	Action     string
 	TargetType string
 	TargetID   string
@@ -63,10 +66,12 @@ func AuditMiddleware(sink AuditWriter) func(http.Handler) http.Handler {
 				return
 			}
 
+			apiKey, userID := actorIDs(r.Context())
 			entry := AuditEntry{
 				ID:         uuid.NewString(),
 				Timestamp:  time.Now().UTC(),
-				APIKeyID:   apiKeyID(r.Context()),
+				APIKeyID:   apiKey,
+				UserID:     userID,
 				Action:     r.Method + " " + r.URL.Path,
 				TargetType: targetTypeFromPath(r.URL.Path),
 				TargetID:   targetIDFromPath(r.URL.Path),
@@ -120,13 +125,17 @@ func targetIDFromPath(p string) string {
 	return ""
 }
 
-// apiKeyID returns the validated API key id attached by AuthMiddleware,
-// or "" under dev-open.
-func apiKeyID(ctx context.Context) string {
-	if r := APIKeyFromCtx(ctx); r != nil {
-		return r.ID
+// actorIDs returns (apiKeyID, userID) for the current request. Exactly
+// one is populated depending on which auth path the request came through:
+// session cookies populate userID; Bearer keys populate apiKeyID.
+func actorIDs(ctx context.Context) (string, string) {
+	if u := UserFromCtx(ctx); u != nil {
+		return "", u.ID
 	}
-	return "dev-open"
+	if k := APIKeyFromCtx(ctx); k != nil {
+		return k.ID, ""
+	}
+	return "", ""
 }
 
 func clientIP(r *http.Request) string {
@@ -183,10 +192,19 @@ func NewPostgresAuditWriter(pool *pgxpool.Pool) *PostgresAuditWriter {
 // the single source of truth.
 
 func (w *PostgresAuditWriter) WriteEntry(ctx context.Context, e AuditEntry) error {
+	// nilIfEmpty: keep NULL in the DB when an actor column isn't used,
+	// instead of empty strings. Makes `WHERE user_id IS NOT NULL` queries
+	// accurate and matches the intent "exactly one actor per row".
+	nilIfEmpty := func(s string) any {
+		if s == "" {
+			return nil
+		}
+		return s
+	}
 	_, err := w.pool.Exec(ctx, `
-		INSERT INTO audit_log (id, ts, api_key_id, action, target_type, target_id, payload, source_ip)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, e.ID, e.Timestamp, e.APIKeyID, e.Action, e.TargetType, e.TargetID,
-		e.Payload, e.SourceIP)
+		INSERT INTO audit_log (id, ts, api_key_id, user_id, action, target_type, target_id, payload, source_ip)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, e.ID, e.Timestamp, nilIfEmpty(e.APIKeyID), nilIfEmpty(e.UserID),
+		e.Action, e.TargetType, e.TargetID, e.Payload, e.SourceIP)
 	return err
 }

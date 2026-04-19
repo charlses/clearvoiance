@@ -7,6 +7,7 @@ import (
 	stdhttp "net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -49,6 +50,12 @@ type serveOpts struct {
 	minioSecretKey string
 	minioBucket    string
 	minioPathStyle bool
+
+	// Dashboard session cookie + CORS. Defaults work for same-origin
+	// setups; production deploys on split subdomains set these.
+	cookieDomain       string
+	cookieSecureAlways bool
+	dashboardOrigins   string // comma-separated list
 }
 
 func newServeCmd(log *slog.Logger, version string) *cobra.Command {
@@ -96,6 +103,23 @@ func newServeCmd(log *slog.Logger, version string) *cobra.Command {
 	cmd.Flags().BoolVar(&opts.minioPathStyle, "minio-path-style",
 		envOrDefault("CLEARVOIANCE_MINIO_PATH_STYLE", "true") == "true",
 		"Use path-style addressing (required for MinIO).")
+
+	// Dashboard session cookie + CORS.
+	cmd.Flags().StringVar(&opts.cookieDomain, "cookie-domain",
+		os.Getenv("CLEARVOIANCE_COOKIE_DOMAIN"),
+		"Session cookie Domain attribute. Empty = host-only. Set to a "+
+			"parent like '.example.com' when dashboard + engine live on "+
+			"different subdomains.")
+	cmd.Flags().BoolVar(&opts.cookieSecureAlways, "cookie-secure",
+		envOrDefault("CLEARVOIANCE_COOKIE_SECURE", "false") == "true",
+		"Force the Secure flag on session cookies even when the "+
+			"incoming request looks HTTP. Use behind a TLS terminator "+
+			"that strips X-Forwarded-Proto.")
+	cmd.Flags().StringVar(&opts.dashboardOrigins, "dashboard-origin",
+		os.Getenv("CLEARVOIANCE_DASHBOARD_ORIGIN"),
+		"Comma-separated list of origins the dashboard is served from. "+
+			"Enables CORS with credentials for those origins. Empty = "+
+			"no CORS (same-origin or Bearer-only deploys).")
 
 	return cmd
 }
@@ -191,7 +215,21 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 			Postgres: opts.postgresDSN,
 			MinIO:    opts.minioEndpoint,
 		},
+		Cookie: rest.CookieConfig{
+			Domain:       opts.cookieDomain,
+			AlwaysSecure: opts.cookieSecureAlways,
+			TTL:          rest.DefaultCookieConfig.TTL,
+			SameSite:     rest.DefaultCookieConfig.SameSite,
+		},
+		CORS: rest.CORSConfig{
+			AllowedOrigins:   splitAndTrim(opts.dashboardOrigins),
+			AllowCredentials: true,
+		},
 	}
+
+	// Periodically garbage-collect expired user sessions. One-hour tick
+	// is plenty — the auth middleware already rejects expired rows.
+	go sweepExpiredUserSessions(ctx, log, meta.UserSessions())
 
 	root := chi.NewRouter()
 	root.Mount("/", rest.Router(restDeps))
@@ -289,6 +327,47 @@ func sweepIdleSessions(ctx context.Context, log *slog.Logger, mgr *sessions.Mana
 			}
 		}
 	}
+}
+
+// sweepExpiredUserSessions runs hourly, deleting expired rows from
+// user_sessions. The Lookup path already rejects expired rows, so this is
+// just housekeeping.
+func sweepExpiredUserSessions(ctx context.Context, log *slog.Logger, store metadata.UserSessions) {
+	tick := time.NewTicker(1 * time.Hour)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			sweepCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			n, err := store.DeleteExpired(sweepCtx)
+			cancel()
+			if err != nil {
+				log.Warn("sweep expired user sessions", "err", err)
+				continue
+			}
+			if n > 0 {
+				log.Info("swept expired user sessions", "count", n)
+			}
+		}
+	}
+}
+
+// splitAndTrim is a tiny helper for comma-separated flag lists. Empty
+// input returns nil (so CORS config treats it as disabled).
+func splitAndTrim(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // openMetaStore returns a Postgres-backed metadata store when a DSN is

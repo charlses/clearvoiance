@@ -63,6 +63,12 @@ func (p *Postgres) Replays() Replays { return &pgReplays{pool: p.pool} }
 // APIKeys returns the api-keys surface.
 func (p *Postgres) APIKeys() APIKeys { return &pgAPIKeys{pool: p.pool} }
 
+// Users returns the dashboard-users surface.
+func (p *Postgres) Users() Users { return &pgUsers{pool: p.pool} }
+
+// UserSessions returns the dashboard-sessions surface.
+func (p *Postgres) UserSessions() UserSessions { return &pgUserSessions{pool: p.pool} }
+
 // Close drains the connection pool.
 func (p *Postgres) Close() error {
 	if p.pool != nil {
@@ -451,4 +457,166 @@ func (a *pgAPIKeys) Count(ctx context.Context) (int64, error) {
 		`SELECT count(*) FROM api_keys`,
 	).Scan(&n)
 	return n, err
+}
+
+// --- users ---
+
+type pgUsers struct {
+	pool *pgxpool.Pool
+}
+
+// pgUniqueViolation is the Postgres SQLSTATE for a unique-constraint breach.
+const pgUniqueViolation = "23505"
+
+func (u *pgUsers) Create(ctx context.Context, row UserRow) error {
+	if row.Role == "" {
+		row.Role = "admin"
+	}
+	_, err := u.pool.Exec(ctx,
+		`INSERT INTO users (id, email, password_hash, role)
+		 VALUES ($1, $2, $3, $4)`,
+		row.ID, strings.ToLower(row.Email), row.PasswordHash, row.Role,
+	)
+	if err != nil {
+		if isPgUniqueViolation(err) {
+			return ErrUserAlreadyExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (u *pgUsers) GetByEmail(ctx context.Context, email string) (*UserRow, error) {
+	return u.scanOne(ctx,
+		`SELECT id, email, password_hash, role, created_at, updated_at, last_login_at
+		   FROM users WHERE email = $1`,
+		strings.ToLower(email))
+}
+
+func (u *pgUsers) GetByID(ctx context.Context, id string) (*UserRow, error) {
+	return u.scanOne(ctx,
+		`SELECT id, email, password_hash, role, created_at, updated_at, last_login_at
+		   FROM users WHERE id = $1`,
+		id)
+}
+
+func (u *pgUsers) scanOne(ctx context.Context, query string, args ...any) (*UserRow, error) {
+	row := u.pool.QueryRow(ctx, query, args...)
+	var r UserRow
+	var lastLoginAt *time.Time
+	err := row.Scan(&r.ID, &r.Email, &r.PasswordHash, &r.Role,
+		&r.CreatedAt, &r.UpdatedAt, &lastLoginAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
+		return nil, err
+	}
+	r.LastLoginAt = lastLoginAt
+	return &r, nil
+}
+
+func (u *pgUsers) UpdatePassword(ctx context.Context, id, passwordHash string) error {
+	tag, err := u.pool.Exec(ctx,
+		`UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1`,
+		id, passwordHash,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+func (u *pgUsers) TouchLogin(ctx context.Context, id string, at time.Time) error {
+	_, err := u.pool.Exec(ctx,
+		`UPDATE users SET last_login_at = $2 WHERE id = $1`,
+		id, at,
+	)
+	return err
+}
+
+func (u *pgUsers) Count(ctx context.Context) (int64, error) {
+	var n int64
+	err := u.pool.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&n)
+	return n, err
+}
+
+// --- user_sessions ---
+
+type pgUserSessions struct {
+	pool *pgxpool.Pool
+}
+
+func (s *pgUserSessions) Create(ctx context.Context, row UserSessionRow) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO user_sessions
+		   (id, user_id, token_hash, created_at, expires_at, last_seen_at, user_agent, ip)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		row.ID, row.UserID, row.TokenHash, row.CreatedAt,
+		row.ExpiresAt, row.LastSeenAt, row.UserAgent, row.IP,
+	)
+	return err
+}
+
+func (s *pgUserSessions) Lookup(ctx context.Context, tokenHash string) (*UserSessionRow, error) {
+	// Bump last_seen_at opportunistically so stale sessions get pruned via
+	// DeleteExpired + idle detection has a meaningful signal.
+	row := s.pool.QueryRow(ctx,
+		`UPDATE user_sessions SET last_seen_at = NOW()
+		  WHERE token_hash = $1 AND expires_at > NOW()
+		 RETURNING id, user_id, token_hash, created_at, expires_at,
+		           last_seen_at, user_agent, ip`,
+		tokenHash,
+	)
+	var r UserSessionRow
+	err := row.Scan(&r.ID, &r.UserID, &r.TokenHash, &r.CreatedAt,
+		&r.ExpiresAt, &r.LastSeenAt, &r.UserAgent, &r.IP)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserSessionNotFound
+		}
+		return nil, err
+	}
+	return &r, nil
+}
+
+func (s *pgUserSessions) Revoke(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM user_sessions WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrUserSessionNotFound
+	}
+	return nil
+}
+
+func (s *pgUserSessions) RevokeAllForUser(ctx context.Context, userID string) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM user_sessions WHERE user_id = $1`, userID)
+	return err
+}
+
+func (s *pgUserSessions) DeleteExpired(ctx context.Context) (int64, error) {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM user_sessions WHERE expires_at <= NOW()`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// isPgUniqueViolation checks the Postgres SQLSTATE without importing the
+// whole pgconn package into metadata's public surface.
+func isPgUniqueViolation(err error) bool {
+	type sqlstater interface{ SQLState() string }
+	var ss sqlstater
+	if errors.As(err, &ss) {
+		return ss.SQLState() == pgUniqueViolation
+	}
+	return false
 }

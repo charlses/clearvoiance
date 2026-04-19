@@ -31,29 +31,60 @@ type Deps struct {
 	Metrics *MetricsRegistry
 	// Config is the read-only slice of runtime config surfaced on /config.
 	Config ConfigView
+	// Cookie shapes Set-Cookie for dashboard sessions. Zero-value falls
+	// back to DefaultCookieConfig.
+	Cookie CookieConfig
+	// CORS controls cross-origin access. Empty AllowedOrigins = no CORS
+	// headers (same-origin or Bearer-only deploys).
+	CORS CORSConfig
+	// Argon2 tunes password hashing. Zero-value falls back to
+	// DefaultArgon2idParams.
+	Argon2 Argon2idParams
 }
 
 // Router builds the full REST surface. Mount under `/api/v1` on whatever
 // http.Server serves it; see engine/internal/cli/serve.go.
 func Router(d Deps) http.Handler {
+	cookieCfg := d.Cookie
+	if cookieCfg.TTL == 0 {
+		cookieCfg = DefaultCookieConfig
+	}
+	argon2 := d.Argon2
+	if argon2.Memory == 0 {
+		argon2 = DefaultArgon2idParams
+	}
+	aDeps := authDeps{
+		users:    d.MetaStore.Users(),
+		sessions: d.MetaStore.UserSessions(),
+		cookie:   cookieCfg,
+		argon2:   argon2,
+	}
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(recoverMiddleware(d.Log))
-	r.Use(corsMiddleware())
+	r.Use(corsMiddleware(d.CORS))
+	// Resolve session cookies before auth so the bearer path only runs
+	// when there's no live session.
+	r.Use(SessionMiddleware(d.MetaStore.Users(), d.MetaStore.UserSessions()))
 	if d.Metrics != nil {
 		r.Use(MetricsMiddleware(d.Metrics))
 	}
 
-	// Unauthenticated operational endpoints.
 	r.Route("/api/v1", func(r chi.Router) {
+		// Unauthenticated operational endpoints.
 		h := &healthHandler{engineVersion: d.Version, store: d.EventStore, meta: d.MetaStore}
 		r.Get("/health", h.health)
 		r.Get("/ready", h.ready)
 		r.Get("/version", h.version)
 		mountMetrics(r, d.Metrics)
 
-		// Everything else requires auth.
+		// /auth/* — mixes public (setup, login, state) and session-gated
+		// (me, change-password). Internal guards via RequireUser.
+		mountAuth(r, aDeps)
+
+		// Everything else requires auth (session OR bearer).
 		r.Group(func(r chi.Router) {
 			r.Use(AuthMiddleware(d.MetaStore.APIKeys()))
 			if d.AuditLogger != nil {
