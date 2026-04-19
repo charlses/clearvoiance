@@ -26,7 +26,7 @@ import {
 } from "./generated/clearvoiance/v1/capture.js";
 import {
   ControlServiceClient,
-  type ControlCommand,
+  type SubscribeResponse,
 } from "./generated/clearvoiance/v1/control.js";
 import type { BlobRef, Event } from "./generated/clearvoiance/v1/event.js";
 import { WAL } from "./client/wal.js";
@@ -118,7 +118,7 @@ export class Client {
   // Remote-control (option-3 architecture): control stream lives
   // for the whole client lifetime, independently of the capture
   // session which cycles with Start/Stop commands.
-  private controlStream: ClientReadableStream<ControlCommand> | null = null;
+  private controlStream: ClientReadableStream<SubscribeResponse> | null = null;
   private controlReconnectTimer: NodeJS.Timeout | null = null;
   private controlReconnectAttempt = 0;
   /** Set true once we've warned about sendBatch being dropped; we only
@@ -576,10 +576,10 @@ export class Client {
     this.controlStream = stream;
     this.controlReconnectAttempt = 0;
 
-    stream.on("data", (cmd: ControlCommand) => {
+    stream.on("data", (cmd: SubscribeResponse) => {
       // Fire-and-forget — any command-handler error logs itself, we
       // don't want to kill the stream on a transient StartCapture hiccup.
-      void this.handleControlCommand(cmd);
+      void this.handleSubscribeResponse(cmd);
     });
     stream.on("error", (err: Error) => {
       if (this.shuttingDown) return;
@@ -598,7 +598,7 @@ export class Client {
     });
   }
 
-  private async handleControlCommand(cmd: ControlCommand): Promise<void> {
+  private async handleSubscribeResponse(cmd: SubscribeResponse): Promise<void> {
     if (cmd.start) {
       const start = cmd.start;
       // Idempotent: duplicate StartCapture for the session we already

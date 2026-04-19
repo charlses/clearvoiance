@@ -10,7 +10,9 @@ syntax = "proto3";
 
 package clearvoiance.v1;
 
-option go_package = "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1;clearvoiancev1";
+// go_package is managed globally via buf.gen.yaml (managed.go_package_prefix)
+// so every proto in this package gets the same value without a per-file
+// option.
 
 service ControlService {
   // Subscribe registers this SDK client with the engine and streams
@@ -18,7 +20,7 @@ service ControlService {
   // process; the SDK reconnects with backoff on any drop. Multiple
   // instances sharing a client_name (e.g. Swarm replicas) each get
   // their own stream and all receive every command in fan-out.
-  rpc Subscribe(SubscribeRequest) returns (stream ControlCommand);
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
 }
 
 message SubscribeRequest {
@@ -44,7 +46,11 @@ message SubscribeRequest {
   string instance_id = 6;
 }
 
-message ControlCommand {
+// SubscribeResponse is the streamed envelope for commands pushed from
+// the engine down to the SDK. Exactly one of start / stop / ping is
+// set per message. Naming-wise it's "RPC response to Subscribe"; the
+// semantic content is a command-to-the-client.
+message SubscribeResponse {
   oneof cmd {
     StartCapture start = 1;
     StopCapture stop = 2;

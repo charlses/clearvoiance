@@ -64,7 +64,7 @@ func NewControlServer(
 type controlStream struct {
 	clientName string
 	instanceID string
-	commands   chan *pb.ControlCommand
+	commands   chan *pb.SubscribeResponse
 	done       chan struct{} // closed when the stream exits
 }
 
@@ -102,7 +102,7 @@ func (s *ControlServer) Subscribe(
 		// requiring the writer to block. Too big and slow clients
 		// delay shutdown; too small and bursts get dropped. 16 is
 		// plenty for operator-driven start/stop.
-		commands: make(chan *pb.ControlCommand, 16),
+		commands: make(chan *pb.SubscribeResponse, 16),
 		done:     make(chan struct{}),
 	}
 	defer close(cs.done)
@@ -140,8 +140,8 @@ func (s *ControlServer) Subscribe(
 				return err
 			}
 		case tick := <-ticker.C:
-			if err := stream.Send(&pb.ControlCommand{
-				Cmd: &pb.ControlCommand_Ping{
+			if err := stream.Send(&pb.SubscribeResponse{
+				Cmd: &pb.SubscribeResponse_Ping{
 					Ping: &pb.Ping{ServerTsMs: tick.UnixMilli()},
 				},
 			}); err != nil {
@@ -158,15 +158,15 @@ func (s *ControlServer) Subscribe(
 // client_name. Returns the count of streams reached (0 if the SDK
 // isn't connected yet — the caller should handle that case).
 func (s *ControlServer) PushStart(clientName string, cmd *pb.StartCapture) int {
-	return s.pushAll(clientName, &pb.ControlCommand{
-		Cmd: &pb.ControlCommand_Start{Start: cmd},
+	return s.pushAll(clientName, &pb.SubscribeResponse{
+		Cmd: &pb.SubscribeResponse_Start{Start: cmd},
 	})
 }
 
 // PushStop fans StopCapture out to every live stream for a client_name.
 func (s *ControlServer) PushStop(clientName string, cmd *pb.StopCapture) int {
-	return s.pushAll(clientName, &pb.ControlCommand{
-		Cmd: &pb.ControlCommand_Stop{Stop: cmd},
+	return s.pushAll(clientName, &pb.SubscribeResponse{
+		Cmd: &pb.SubscribeResponse_Stop{Stop: cmd},
 	})
 }
 
@@ -192,7 +192,7 @@ func (s *ControlServer) OnlineClients() map[string]int {
 
 // --- internal -------------------------------------------------------
 
-func (s *ControlServer) pushAll(clientName string, cmd *pb.ControlCommand) int {
+func (s *ControlServer) pushAll(clientName string, cmd *pb.SubscribeResponse) int {
 	s.mu.RLock()
 	streams := append([]*controlStream(nil), s.streams[clientName]...)
 	s.mu.RUnlock()
@@ -248,8 +248,8 @@ func (s *ControlServer) resumeIfActive(ctx context.Context, cs *controlStream) {
 	s.log.Info("resuming capture on reconnect",
 		"client", cs.clientName, "session", *row.ActiveSessionID)
 	select {
-	case cs.commands <- &pb.ControlCommand{
-		Cmd: &pb.ControlCommand_Start{
+	case cs.commands <- &pb.SubscribeResponse{
+		Cmd: &pb.SubscribeResponse_Start{
 			Start: &pb.StartCapture{
 				SessionId:     *row.ActiveSessionID,
 				SessionName:   row.DisplayName,
