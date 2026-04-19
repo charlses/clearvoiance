@@ -11,7 +11,7 @@ pack during replay so your tests never hit real external APIs.
 
 - **Docs**: https://github.com/charlses/clearvoiance
 - **Engine**: Go, self-hosted (gRPC + REST + WebSocket control plane)
-- **Node**: 20+ required (uses stable `AsyncLocalStorage` + global `fetch`)
+- **Node**: 18+ required (uses stable `AsyncLocalStorage` + global `fetch`)
 - **License**: Apache-2.0
 
 ## Install
