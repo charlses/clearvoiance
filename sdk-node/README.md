@@ -86,6 +86,53 @@ process.on("SIGTERM", shutdown);
 process.on("SIGINT",  shutdown);
 ```
 
+## Remote-controlled mode
+
+For production services you usually don't want capture running 24/7 —
+you want to record a specific 10 min window when something's off, then
+replay it. Set `remote.clientName` and the SDK subscribes to the
+engine's ControlService and waits idle. The dashboard's **Monitors**
+page drives Start / Stop:
+
+```ts
+const client = createClient({
+  engine: {
+    url: process.env.CLEARVOIANCE_ENGINE_URL!,
+    apiKey: process.env.CLEARVOIANCE_API_KEY!,
+    tls: true,
+  },
+  // Session name is used only as a fallback; actual session ids come
+  // from StartCapture commands pushed by the control plane.
+  session: { name: "my-api" },
+  remote: {
+    clientName: "my-api-prod",            // stable identity, survives restarts
+    displayName: "My API (production)",   // shown in the dashboard
+    labels: { env: "production", region: "eu-central-1" },
+  },
+  wal: { dir: "/var/lib/clearvoiance-wal" },
+});
+
+await client.start();
+// SDK is now subscribed. sendBatch() drops events silently until
+// the dashboard clicks Start; after that it streams until Stop.
+```
+
+While idle, captures are a no-op: the middleware runs but
+`sendBatch()` drops events without touching the network. Only a
+StartCapture command from the dashboard opens a session; StopCapture
+flushes + closes it. Each cycle is a distinct replayable session.
+
+**Properties worth knowing:**
+
+- SDK reconnect / engine restart / pod reschedule mid-capture: the
+  engine keeps the session active, SDK reattaches on reconnect via
+  `preferred_session_id`. Events resume in the same session.
+- Horizontal replicas sharing a `clientName`: dashboard Start fans out
+  to every live stream, all replicas contribute to the same session.
+- Engine reachability required for capture; the Subscribe stream is
+  plain server-streaming gRPC, so the engine needs to be reachable
+  directly (e.g. via Traefik's h2c router for TLS-terminated gRPC).
+
 ## Adapters
 
 Each adapter is a separate subpath import. Installing the SDK doesn't
