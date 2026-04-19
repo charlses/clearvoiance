@@ -79,44 +79,75 @@ DASHBOARD_PORT=3000
 
 ## Going beyond localhost with Traefik
 
-The compose file ships with Traefik labels commented on both engine and
-dashboard services. To expose over TLS:
+Two ways to turn Traefik on. Pick whichever fits your workflow — both
+wire up the same routers + TLS certs.
 
-### 1. Uncomment the labels
+### Option A — use the override file (recommended)
 
-In `deploy/docker-compose.yml`, uncomment the `networks:` and `labels:`
-blocks on `engine:` and `ui:`, plus the top-level `networks:` block.
+`deploy/docker-compose.traefik.yml` is a committed override that adds
+the Traefik labels and joins the external network. No edits to
+`docker-compose.yml` required:
 
-### 2. Set Traefik vars in `.env`
+```bash
+docker compose \
+  --env-file deploy/.env \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.traefik.yml \
+  up -d --build
+```
+
+### Option B — uncomment inline
+
+`deploy/docker-compose.yml` ships with the Traefik labels commented
+on both `engine:` and `ui:`. Uncomment the `networks:` + `labels:`
+blocks on each service plus the top-level `networks:` block at the
+bottom of the file, then `docker compose up -d --build`.
+
+### Either way, set these in `.env`
 
 ```bash
 TRAEFIK_NETWORK=traefik_proxy
 TRAEFIK_ENTRYPOINT=websecure
-TRAEFIK_CERT_RESOLVER=le
+TRAEFIK_CERT_RESOLVER=letsencrypt
 TRAEFIK_API_HOST=api.clearvoiance.example.com
 TRAEFIK_UI_HOST=app.clearvoiance.example.com
 ```
 
-### 3. Join or create the external network
+`TRAEFIK_CERT_RESOLVER` must match the resolver name in your Traefik
+config — `letsencrypt` is the common default but some setups call it
+`le` or `myresolver`.
+
+### Make sure the external network exists
 
 ```bash
-docker network create traefik_proxy   # or whatever TRAEFIK_NETWORK is set to
+docker network create traefik_proxy   # or whatever TRAEFIK_NETWORK is
 ```
 
-If you already run Traefik elsewhere on this host, reuse that network
-name instead — the compose file will attach both services to it.
+If you already run Traefik on this host, reuse its network name —
+both engine + dashboard will attach to it automatically.
 
-### 4. Rebuild the dashboard with the public URL
+### Rebuild the dashboard with the public URL
 
-`CLEARVOIANCE_API_URL` bakes into the JS bundle:
+`CLEARVOIANCE_API_URL` bakes into the JS bundle, so changing it
+requires rebuilding `ui`:
 
 ```bash
 # in deploy/.env:
 CLEARVOIANCE_API_URL=https://api.clearvoiance.example.com
 
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml build ui
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
+docker compose \
+  --env-file deploy/.env \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.traefik.yml \
+  build ui
+docker compose \
+  --env-file deploy/.env \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.traefik.yml \
+  up -d
 ```
+
+(Omit the second `-f` if you took Option B and uncommented inline.)
 
 ## Optional: DB observer
 

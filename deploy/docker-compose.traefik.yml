@@ -1,0 +1,47 @@
+# Traefik override for deploy/docker-compose.yml.
+#
+# Usage:
+#   docker compose \
+#     --env-file deploy/.env \
+#     -f deploy/docker-compose.yml \
+#     -f deploy/docker-compose.traefik.yml \
+#     up -d --build
+#
+# Exposes the engine's HTTP control plane and the dashboard via Traefik.
+# The gRPC port (SDK target) stays on loopback — separate TCP routing is
+# out of scope here.
+#
+# Prereqs:
+#   - External docker network named ${TRAEFIK_NETWORK} (default traefik_proxy)
+#     already exists (usually the Traefik stack owns it).
+#   - .env has TRAEFIK_* + CLEARVOIANCE_API_URL set (see deploy/.env.example).
+
+services:
+  engine:
+    networks:
+      - default
+      - traefik_proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik_proxy}"
+      - "traefik.http.routers.clearvoiance-api.rule=Host(`${TRAEFIK_API_HOST}`)"
+      - "traefik.http.routers.clearvoiance-api.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.clearvoiance-api.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.services.clearvoiance-api.loadbalancer.server.port=9101"
+
+  ui:
+    networks:
+      - default
+      - traefik_proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik_proxy}"
+      - "traefik.http.routers.clearvoiance-ui.rule=Host(`${TRAEFIK_UI_HOST}`)"
+      - "traefik.http.routers.clearvoiance-ui.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.clearvoiance-ui.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.services.clearvoiance-ui.loadbalancer.server.port=3000"
+
+networks:
+  traefik_proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik_proxy}

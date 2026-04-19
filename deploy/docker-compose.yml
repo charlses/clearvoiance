@@ -8,8 +8,16 @@
 #
 # Bucket `${MINIO_BUCKET}` is auto-created on first boot via the
 # `minio-bootstrap` one-shot. All services bind to loopback by default.
-# To expose externally, either change the port mappings or uncomment the
-# Traefik block at the bottom + the `traefik.*` labels on engine + ui.
+#
+# To expose externally via Traefik, either:
+#   (a) uncomment the `traefik.*` labels + `networks:` blocks below on
+#       engine/ui + the top-level `networks:` block, or
+#   (b) use the ready-made override file — no edits needed:
+#         docker compose \
+#           --env-file deploy/.env \
+#           -f deploy/docker-compose.yml \
+#           -f deploy/docker-compose.traefik.yml \
+#           up -d --build
 
 name: clearvoiance
 
@@ -120,6 +128,8 @@ services:
       - "127.0.0.1:${ENGINE_GRPC_PORT:-9100}:9100"   # gRPC capture
       - "127.0.0.1:${ENGINE_HTTP_PORT:-9101}:9101"   # REST + WS control plane
     # ---- Traefik (uncomment + set labels to expose externally) ------------
+    # Or keep this commented and use the ready-made override file:
+    #   docker-compose.yml + docker-compose.traefik.yml
     # networks:
     #   - default
     #   - traefik_proxy
@@ -146,6 +156,8 @@ services:
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-3000}:3000"
     # ---- Traefik (uncomment + set labels to expose externally) ------------
+    # Or keep this commented and use the ready-made override file:
+    #   docker-compose.yml + docker-compose.traefik.yml
     # networks:
     #   - default
     #   - traefik_proxy
