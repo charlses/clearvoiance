@@ -1,0 +1,66 @@
+name: publish @clearvoiance/node
+
+# Triggered on tags of the form v1.2.3 or v1.2.3-pre. The workflow cross-
+# checks the tag against sdk-node/package.json#version so a mismatched tag
+# never reaches npm. Reuses the same build pipeline CI exercises on every
+# push, so what lands on npm is exactly what the matrix green-lit.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+  id-token: write  # OIDC; lets the GitHub Actions publisher show up in npm provenance
+
+jobs:
+  publish:
+    name: publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: regenerate proto bindings
+        uses: bufbuild/buf-action@v1
+        with:
+          version: 1.68.1
+          setup_only: true
+      - run: buf generate
+        working-directory: proto
+
+      - name: Tag must match sdk-node/package.json#version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p 'require("./sdk-node/package.json").version')"
+          if [ "$TAG" != "$PKG_VERSION" ]; then
+            echo "Refusing to publish: tag ${GITHUB_REF_NAME} -> ${TAG} does not match sdk-node/package.json version ${PKG_VERSION}"
+            exit 1
+          fi
+          echo "Tag and package.json agree on version ${PKG_VERSION}."
+
+      - name: Test + build
+        run: |
+          pnpm --filter @clearvoiance/node test
+          pnpm --filter @clearvoiance/node build
+
+      - name: Publish
+        working-directory: sdk-node
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # --no-git-checks skips "uncommitted changes" / "current branch" checks
+        # that make sense interactively but not in CI. --provenance publishes a
+        # signed provenance attestation so consumers can verify the package
+        # came from this workflow.
+        run: pnpm publish --no-git-checks --access public --provenance

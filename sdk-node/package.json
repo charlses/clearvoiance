@@ -1,9 +1,12 @@
 {
   "name": "@clearvoiance/node",
-  "version": "0.0.0-alpha.0",
+  "version": "0.1.0",
   "description": "Node.js SDK for clearvoiance — capture traffic from your backend and replay it at N× speed.",
   "license": "Apache-2.0",
   "author": "Davit Tavadze",
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/charlses/clearvoiance.git",
@@ -162,14 +165,17 @@
     "LICENSE"
   ],
   "scripts": {
+    "prebuild": "node scripts/sync-version.mjs",
     "build": "tsdown",
     "dev": "tsdown --watch",
+    "pretest": "node scripts/sync-version.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run -c vitest.integration.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "sync-version": "node scripts/sync-version.mjs"
   },
   "engines": {
     "node": ">=24"

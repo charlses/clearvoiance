@@ -1,8 +1,7 @@
 /**
- * Single source of truth for the SDK version string. Kept in its own file so
- * adapters can import it without pulling in the gRPC client.
- *
- * TODO(phase-1i): generate this from package.json at build time via tsup's
- * `env` option so the constant can't drift from the published version.
+ * Single source of truth for the SDK version string. Generated from
+ * package.json#version by scripts/sync-version.mjs — do not edit by hand;
+ * bump the version in package.json and re-run `pnpm build` (or let the
+ * prebuild hook sync automatically).
  */
-export const SDK_VERSION = "0.0.0-alpha.0";
+export const SDK_VERSION = "0.1.0";
