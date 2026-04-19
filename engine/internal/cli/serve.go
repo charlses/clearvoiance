@@ -172,6 +172,7 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 	)
 	replayGRPC := capturegrpc.NewReplayServer(log, replayEngine, meta.Replays())
 	hermeticGRPC := capturegrpc.NewHermeticServer(log, store, meta.APIKeys())
+	controlGRPC := capturegrpc.NewControlServer(log, meta.Monitors(), meta.APIKeys())
 
 	lis, err := net.Listen("tcp", opts.grpcAddr)
 	if err != nil {
@@ -182,6 +183,7 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 	pb.RegisterCaptureServiceServer(srv, capture)
 	pb.RegisterReplayServiceServer(srv, replayGRPC)
 	pb.RegisterHermeticServiceServer(srv, hermeticGRPC)
+	pb.RegisterControlServiceServer(srv, controlGRPC)
 	// Reflection lets us poke the server with grpcurl during development.
 	reflection.Register(srv)
 
@@ -225,6 +227,7 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 			AllowedOrigins:   splitAndTrim(opts.dashboardOrigins),
 			AllowCredentials: true,
 		},
+		ControlPusher: controlGRPC,
 	}
 
 	// Periodically garbage-collect expired user sessions. One-hour tick

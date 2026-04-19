@@ -53,14 +53,15 @@ func buildServer(t *testing.T) (*httptest.Server, metadata.Store) {
 }
 
 // testMeta wraps metadata.Noop but provides functional in-memory
-// implementations of APIKeys, Users, and UserSessions so auth paths can
-// be exercised without Postgres. The rest of the metadata surface stays
-// Noop since the tests don't touch it.
+// implementations of APIKeys, Users, UserSessions, and Monitors so
+// auth and control-plane paths can be exercised without Postgres. The
+// rest of the metadata surface stays Noop since the tests don't touch it.
 type testMeta struct {
 	metadata.Noop
 	apiKeys      *memAPIKeys
 	users        *memUsers
 	userSessions *memUserSessions
+	monitors     *memMonitors
 }
 
 func newTestMeta() *testMeta {
@@ -68,12 +69,14 @@ func newTestMeta() *testMeta {
 		apiKeys:      &memAPIKeys{rows: map[string]metadata.APIKeyRow{}},
 		users:        &memUsers{rows: map[string]metadata.UserRow{}},
 		userSessions: &memUserSessions{rows: map[string]metadata.UserSessionRow{}},
+		monitors:     &memMonitors{rows: map[string]metadata.MonitorRow{}},
 	}
 }
 
 func (m *testMeta) APIKeys() metadata.APIKeys             { return m.apiKeys }
 func (m *testMeta) Users() metadata.Users                 { return m.users }
 func (m *testMeta) UserSessions() metadata.UserSessions   { return m.userSessions }
+func (m *testMeta) Monitors() metadata.Monitors           { return m.monitors }
 
 type memAPIKeys struct {
 	mu   sync.Mutex
@@ -244,6 +247,71 @@ func (m *memUserSessions) DeleteExpired(_ context.Context) (int64, error) {
 		}
 	}
 	return n, nil
+}
+
+type memMonitors struct {
+	mu   sync.Mutex
+	rows map[string]metadata.MonitorRow // keyed by name
+}
+
+func (m *memMonitors) Upsert(_ context.Context, row metadata.MonitorRow) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	if existing, ok := m.rows[row.Name]; ok {
+		// Preserve capture state across re-register — same semantics as pg.
+		row.CaptureEnabled = existing.CaptureEnabled
+		row.ActiveSessionID = existing.ActiveSessionID
+		row.CreatedAt = existing.CreatedAt
+	} else {
+		row.CreatedAt = now
+	}
+	row.LastSeenAt = now
+	row.UpdatedAt = now
+	m.rows[row.Name] = row
+	return nil
+}
+func (m *memMonitors) TouchLastSeen(_ context.Context, name string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rows[name]
+	if !ok {
+		return metadata.ErrMonitorNotFound
+	}
+	r.LastSeenAt = at
+	m.rows[name] = r
+	return nil
+}
+func (m *memMonitors) Get(_ context.Context, name string) (*metadata.MonitorRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rows[name]
+	if !ok {
+		return nil, metadata.ErrMonitorNotFound
+	}
+	return &r, nil
+}
+func (m *memMonitors) List(_ context.Context) ([]metadata.MonitorRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]metadata.MonitorRow, 0, len(m.rows))
+	for _, r := range m.rows {
+		out = append(out, r)
+	}
+	return out, nil
+}
+func (m *memMonitors) SetCaptureState(_ context.Context, name string, enabled bool, sessionID *string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rows[name]
+	if !ok {
+		return metadata.ErrMonitorNotFound
+	}
+	r.CaptureEnabled = enabled
+	r.ActiveSessionID = sessionID
+	r.UpdatedAt = time.Now()
+	m.rows[name] = r
+	return nil
 }
 
 func doJSON(t *testing.T, method, url string, body any, headers map[string]string) (int, []byte) {

@@ -105,8 +105,9 @@ func (s *CaptureServer) StartSession(ctx context.Context, req *pb.StartSessionRe
 	}
 
 	sess, err := s.mgr.Start(ctx, sessions.StartRequest{
-		Name:   req.GetName(),
-		Labels: req.GetLabels(),
+		Name:        req.GetName(),
+		Labels:      req.GetLabels(),
+		PreferredID: req.GetPreferredSessionId(),
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start session: %v", err)

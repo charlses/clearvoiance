@@ -40,6 +40,11 @@ type Deps struct {
 	// Argon2 tunes password hashing. Zero-value falls back to
 	// DefaultArgon2idParams.
 	Argon2 Argon2idParams
+	// ControlPusher is the bridge to the gRPC ControlService's live
+	// stream registry. When nil, /api/v1/monitors/:name/start and /stop
+	// still persist capture-state changes but can't push commands to
+	// SDKs in real time — they'll only take effect on next reconnect.
+	ControlPusher ControlPusher
 }
 
 // Router builds the full REST surface. Mount under `/api/v1` on whatever
@@ -96,6 +101,7 @@ func Router(d Deps) http.Handler {
 			mountReplays(r, d)
 			mountAPIKeys(r, d)
 			mountDbObservations(r, d)
+			mountMonitors(r, d)
 		})
 	})
 
