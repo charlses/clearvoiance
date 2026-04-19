@@ -1,4 +1,9 @@
 packages:
   - "sdk-node"
   - "ui"
+  - "site"
   - "examples/*"
+
+ignoredBuiltDependencies:
+  - sharp
+  - unrs-resolver

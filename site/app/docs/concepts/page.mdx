@@ -1,0 +1,149 @@
+export const metadata = {
+  title: "Core concepts",
+  description:
+    "Capture, replay, hermetic, observer — the four parts of clearvoiance and how they fit together.",
+};
+
+# Core concepts
+
+clearvoiance is four things that combine into one workflow. Most of the
+confusion about the project evaporates once the four are distinct in
+your head.
+
+## 1. Capture
+
+**The SDK wraps your framework's request lifecycle and streams events
+to the engine.** Every inbound HTTP request, socket message, cron tick,
+queue job, outbound HTTP call, and DB query becomes an event with a
+unique id, a timestamp, and a payload.
+
+```
+browser → express → captureHttp(middleware) → gRPC → engine → ClickHouse
+```
+
+Key properties:
+
+- **AsyncLocalStorage context.** Every inbound event opens a scope keyed
+  on its id. Child operations (outbound fetches, DB queries, emitted
+  socket messages) read `currentEventId()` so they can be correlated
+  back to the originating request.
+- **Write-ahead log.** If the engine's unreachable, the client
+  persists events to `wal.dir` and drains them automatically when the
+  connection comes back. No lost events on deploys / restarts.
+- **Backpressure-aware.** Large response bodies get hashed + offloaded
+  to blob storage (MinIO / S3) instead of traveling the gRPC stream.
+- **Redacted by default.** Authorization, Cookie, Set-Cookie, and other
+  auth-adjacent headers are redacted with `[REDACTED]`; the name of the
+  redaction is recorded on the event for audit.
+
+## 2. Replay
+
+**The replay engine reads captured events from ClickHouse and fires
+them at a target URL at configurable speedup.** A 1-hour capture can
+replay in 5 minutes at 12×.
+
+```
+ClickHouse → scheduler → dispatcher matrix → SUT (staging)
+                        ├── HTTPDispatcher
+                        ├── SocketIODispatcher
+                        ├── CronDispatcher  → invoke-server on SUT
+                        └── QueueDispatcher → invoke-server on SUT
+```
+
+Key properties:
+
+- **Per-protocol dispatchers.** HTTP fires real requests at the target;
+  cron + queue go through the SUT's hermetic invoke server (see below)
+  so handlers run locally with the captured args.
+- **Virtual users.** Fan out each captured event to N concurrent copies
+  to push load past the captured baseline.
+- **Time-window selection.** Replay only the 10 minutes around a known
+  incident without re-running the full capture.
+- **Target-duration mode.** Say "replay this 1-hour capture in 5
+  minutes"; the engine derives the speedup automatically.
+- **Auth strategies.** `jwt_resign`, `static_swap`, custom callback —
+  replay traffic with valid-at-target-time tokens.
+- **Body mutators.** Starlark scripts that rewrite JSON bodies between
+  capture and dispatch (unique emails per VU, customer-id swap, etc.)
+  so the SUT doesn't key-conflict on itself.
+
+## 3. Hermetic mode
+
+**The "safe replay" piece.** Without it, replaying production traffic
+against staging would send real emails, charge real Stripe cards,
+and hammer real third-party APIs. With it, none of that happens.
+
+```
+captured outbounds → mock pack → in-memory LRU on SUT
+                                       ↑
+SUT.fetch() → intercept → lookup (event_id, signature) ──┘
+                                                          (found: serve)
+                                                          (not found, strict: throw)
+```
+
+Key properties:
+
+- **Record + serve.** During capture, outbound HTTP + fetch calls
+  become `OutboundEvent` records. During replay (`CLEARVOIANCE_HERMETIC=true`),
+  the SDK swaps the capturing patches for mock-serving ones: every
+  outbound is looked up by `(event_id, signature)` and served from the
+  captured response.
+- **Strict vs. loose policy.** Strict throws on unmocked outbounds
+  (catches real drift where the SUT now calls something it didn't call
+  during capture). Loose returns `200 {}` (quieter during development).
+- **Cron killer.** Replaces `node-cron.schedule` with a registry that
+  never auto-fires. The replay engine's cron dispatcher triggers
+  registered handlers via a POST to an in-process invoke-server.
+- **Invoke server.** Listens on `127.0.0.1:7777` (or a Sheet-style
+  middleware mounted on your existing HTTP server). Optional Bearer
+  token for cross-container setups.
+
+## 4. DB observer
+
+**The killer feature.** During replay, a sidecar binary polls the SUT's
+Postgres `pg_stat_activity` and correlates every slow query back to
+the replay event that caused it.
+
+```
+SUT.pg_query  — application_name = 'clv:<event_id>'
+                       ↑ set by instrumentPg on pool.connect
+                       or by instrumentPrisma in $extends.query
+observer poll  → pg_stat_activity WHERE application_name LIKE 'clv:%'
+                       → DbObservation{event_id, duration_ns, query_text, ...}
+                       → ClickHouse.db_observations
+```
+
+Key properties:
+
+- **`application_name` as the correlation key.** Connection-level SQL
+  that every Postgres connection carries. Both `instrumentPg`
+  (node-postgres + Knex) and `instrumentPrisma` set it per query.
+- **Threshold-based emission.** Queries slower than
+  `--slow-threshold-ms` (default 100ms) become SlowQuery observations;
+  queries in `wait_event_type = 'Lock'` become LockWait observations.
+- **Debounced.** A 5-second slow query doesn't emit 50 observations
+  (once per 100ms poll); it emits one record when the query completes.
+- **Rollups.** The UI shows top slow queries by p95, DB time by
+  endpoint, and lock-wait summaries per replay — one click away from
+  the replay detail page.
+
+## The workflow end-to-end
+
+Putting it together:
+
+1. **Capture** a 1-hour window of production traffic. Events land in
+   ClickHouse, blobs in MinIO.
+2. Stop the capture session. You now have a replayable snapshot.
+3. **Stand up staging** with the SDK in hermetic mode pointing at the
+   same engine: `CLEARVOIANCE_HERMETIC=true CLEARVOIANCE_SOURCE_SESSION_ID=sess_abc`.
+4. Kick off a **replay** at 12×. The engine fires captured HTTP against
+   staging, captured crons/queues against the invoke server, captured
+   outbounds get served from the mock pack.
+5. The **observer** watches staging's Postgres and writes
+   per-event DB observations.
+6. Six minutes later, the dashboard shows every slow query, every lock,
+   every deadlock — correlated to the exact captured event that caused
+   it.
+
+That's what makes clearvoiance useful for finding the problems
+synthetic load tests miss.

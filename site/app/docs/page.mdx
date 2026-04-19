@@ -1,0 +1,63 @@
+export const metadata = {
+  title: "Docs",
+  description:
+    "clearvoiance captures real traffic and replays it at N× against a hermetic clone. Read the quickstart or dive into the concepts.",
+};
+
+# Documentation
+
+**clearvoiance** is a self-hostable traffic capture + time-compressed
+replay system. This section walks through how to install the SDK, run an
+engine locally, capture your first session, and replay it with DB
+correlation.
+
+## Start here
+
+- **[Quickstart](/docs/quickstart)** — install the SDK, point it at a
+  local engine, capture an HTTP session, replay it in 60 seconds.
+- **[Core concepts](/docs/concepts)** — capture vs. replay vs. hermetic
+  vs. observer, and how the four fit together.
+
+## What's in the box
+
+clearvoiance has four components, all in one repo:
+
+1. **The SDK** (`@clearvoiance/node`) runs inside your app. It captures
+   HTTP, WebSockets, cron, queues, outbound HTTP/fetch, and DB queries,
+   streaming events to the engine over gRPC. Framework adapters are
+   optional peer deps — install only what you use.
+2. **The engine** is a Go binary that persists events to ClickHouse +
+   MinIO, schedules replays at configurable speedup, and exposes a
+   REST/WebSocket control plane. Self-host via docker-compose.
+3. **The DB observer** is a sidecar (or embedded) binary that polls
+   `pg_stat_activity`, parses the SDK's
+   `application_name = 'clv:<event_id>'`, and correlates every slow
+   query back to the replay event that caused it.
+4. **The dashboard** is a Next.js UI that drives the REST API —
+   sessions, replays with live 250ms progress updates, DB observations,
+   API key management.
+
+## How it's different
+
+Every tool in the space makes you pick one of:
+
+- **Synthetic load** (k6, Artillery, Locust, Gatling) — you hand-write
+  traffic. Real production is always weirder than your scripts.
+- **Wall-clock replay** (GoReplay, mirrord) — replays at 1×. Useful for
+  smoke tests, useless for finding scale ceilings.
+- **Chaos injection** (Toxiproxy, Chaos Mesh) — injects failures, doesn't
+  model realistic traffic shapes.
+
+clearvoiance does all three in one flow: capture a real traffic window,
+replay at 12–100×, watch the DB side of the replay in the same UI.
+Output looks like: *"Under 12× prod load, `POST /api/leads` triggers
+lock contention on `leads_email_key` after ~400ms. Here's the query
+plan. Here's the captured event. Here's the reproducer."*
+
+## Install
+
+```bash
+npm install @clearvoiance/node
+```
+
+Node 24+ required. Then head to the [quickstart](/docs/quickstart).

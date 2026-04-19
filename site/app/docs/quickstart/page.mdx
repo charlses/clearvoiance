@@ -1,0 +1,141 @@
+export const metadata = {
+  title: "Quickstart",
+  description:
+    "Install the SDK, run a local engine via docker-compose, capture an HTTP session, replay it at 12×.",
+};
+
+# Quickstart
+
+From zero to "I just replayed my own traffic" in about five minutes.
+
+## 1. Run the engine locally
+
+The engine needs ClickHouse, Postgres, and MinIO. The repo ships a
+docker-compose stack that brings all three up alongside the engine
+binary:
+
+```bash
+git clone https://github.com/charlses/clearvoiance
+cd clearvoiance/deploy
+docker-compose up -d
+```
+
+The engine's gRPC endpoint is now at `127.0.0.1:9100` and the REST
+control plane + WebSocket hub at `127.0.0.1:9101`. Visit
+`http://127.0.0.1:9101/docs` to see the Swagger UI.
+
+## 2. Install the SDK in your app
+
+```bash
+npm install @clearvoiance/node
+```
+
+Node 24+ required. Every framework integration is an optional peer
+dep — installing the SDK doesn't pull Express / Fastify / Prisma etc.
+
+## 3. Wire it up
+
+Minimal Express example. Replace with Koa, Fastify, or Strapi as needed
+— the patterns mirror each other.
+
+```ts
+import express from "express";
+import { createClient } from "@clearvoiance/node";
+import { captureHttp } from "@clearvoiance/node/http/express";
+import { patchOutbound } from "@clearvoiance/node/outbound";
+
+const client = createClient({
+  engine: { url: "127.0.0.1:9100", apiKey: "dev" },
+  session: { name: "my-api" },
+  // Persist in-flight events across engine restarts:
+  wal: { dir: "/var/lib/clearvoiance-wal" },
+});
+await client.start();
+
+// Optional: record every http.request / fetch made FROM your app
+patchOutbound(client);
+
+const app = express();
+app.use(captureHttp(client));
+
+app.get("/hello/:name", (req, res) =>
+  res.json({ hello: req.params.name }),
+);
+
+app.listen(3000);
+```
+
+On shutdown, drain any buffered events so nothing's lost:
+
+```ts
+const shutdown = async () => {
+  await client.stop({ flushTimeoutMs: 10_000 });
+  process.exit(0);
+};
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+```
+
+## 4. Generate some traffic
+
+Hit the app a few times. The SDK streams each request as an event; the
+engine persists them to ClickHouse.
+
+```bash
+for i in $(seq 1 20); do curl -s http://localhost:3000/hello/alice; done
+```
+
+## 5. See it land
+
+Open the dashboard at `http://127.0.0.1:3100` (part of the
+docker-compose stack). Log in with any non-empty API key — dev-open
+mode accepts anything until you provision a real one. You'll see the
+active session with its event count ticking up.
+
+## 6. Stop the session + replay it
+
+Stop the session (in the UI, or via `clearvoiance session stop`).
+Then kick off a replay at 12×:
+
+```bash
+clearvoiance replay start \
+  --source sess_abc \
+  --target http://localhost:3000 \
+  --speedup 12
+```
+
+The engine schedules every captured event at compressed time and fires
+them at the target. In the dashboard, `/replays/<id>` shows 250ms live
+progress via the WebSocket hub.
+
+## 7. Correlate DB queries to events
+
+If your app uses Postgres, wrap the pool with `instrumentPg` so every
+query carries `application_name = 'clv:<event_id>'`:
+
+```ts
+import { Pool } from "pg";
+import { instrumentPg } from "@clearvoiance/node/db/postgres";
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+instrumentPg(pool, { replayId: process.env.CLEARVOIANCE_REPLAY_ID });
+```
+
+Start the DB observer alongside the engine:
+
+```bash
+clearvoiance-observer run \
+  --postgres-dsn "postgres://observer:readonly@localhost:5432/app?sslmode=disable" \
+  --clickhouse-dsn "clickhouse://default:dev@localhost:9000/clearvoiance"
+```
+
+Now `/replays/<id>/db` surfaces slow queries grouped by fingerprint,
+DB time rolled up per endpoint, and any lock waits — each correlated
+back to the replay event that caused it.
+
+## What's next
+
+- **[Core concepts](/docs/concepts)** — the four components (capture,
+  replay, hermetic, observer) and how they combine.
+- **[Adapters](https://github.com/charlses/clearvoiance/tree/main/sdk-node)** —
+  the full per-framework setup reference lives in the SDK README.
