@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  Activity,
   CircleUser,
   Cog,
   Database,
@@ -24,6 +25,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { href: "/", label: "Dashboard", icon: Gauge },
+  { href: "/monitors", label: "Monitors", icon: Activity },
   { href: "/sessions", label: "Sessions", icon: History },
   { href: "/replays", label: "Replays", icon: PlayCircle },
   { href: "/settings", label: "Settings", icon: Cog },

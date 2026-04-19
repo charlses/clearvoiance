@@ -238,12 +238,60 @@ export const api = {
   revokeAPIKey: (id: string) =>
     req<void>(`/api/v1/api-keys/${id}`, { method: "DELETE" }, { parse: "none" }),
 
+  // --- Monitors (remote-controlled capture clients) ---------------------
+  listMonitors: () =>
+    req<{ monitors: Monitor[]; count: number }>(`/api/v1/monitors`),
+  getMonitor: (name: string) =>
+    req<Monitor>(`/api/v1/monitors/${encodeURIComponent(name)}`),
+  startMonitor: (
+    name: string,
+    body: {
+      session_name?: string;
+      session_labels?: Record<string, string>;
+      flush_timeout_ms?: number;
+    } = {},
+  ) =>
+    req<{
+      monitor_name: string;
+      session_id: string;
+      session_name: string;
+      pushed_to_online: number;
+      note?: string;
+    }>(`/api/v1/monitors/${encodeURIComponent(name)}/start`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  stopMonitor: (name: string) =>
+    req<{
+      monitor_name: string;
+      session_id: string;
+      pushed_to_online: number;
+      note?: string;
+    }>(`/api/v1/monitors/${encodeURIComponent(name)}/stop`, {
+      method: "POST",
+      body: "{}",
+    }),
+
   // --- Config + metrics -------------------------------------------------
   config: () => req<ConfigView>(`/api/v1/config`),
   metricsText: () => req<string>(`/api/v1/metrics`, {}, { parse: "text" }),
 };
 
 // --- shapes returned by the engine ------------------------------------
+
+export interface Monitor {
+  name: string;
+  display_name: string;
+  labels: Record<string, string>;
+  capture_enabled: boolean;
+  active_session_id?: string;
+  sdk_language?: string;
+  sdk_version?: string;
+  last_seen_at: string;
+  created_at: string;
+  online_replicas: number;
+  online: boolean;
+}
 
 export interface EventView {
   id: string;
