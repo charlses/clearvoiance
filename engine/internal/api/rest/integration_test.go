@@ -82,13 +82,31 @@ func buildPGServer(t *testing.T) (*httptest.Server, *metadata.Postgres) {
 	return srv, pg
 }
 
+// seedAPIKey inserts a key directly into Postgres and returns the
+// plaintext. Replaces the dev-open bootstrap that these tests used to
+// lean on — since dev-open is now gone, something has to prime the keys
+// table before any authed handler call works.
+func seedAPIKey(t *testing.T, pg *metadata.Postgres, name string) (id, plaintext string) {
+	t.Helper()
+	plaintext = "clv_live_" + name + "-seed-" + fmt.Sprint(time.Now().UnixNano())
+	id = "key_seed_" + fmt.Sprint(time.Now().UnixNano())
+	require.NoError(t,
+		pg.APIKeys().Create(context.Background(), id, rest.HashAPIKey(plaintext), name),
+	)
+	return id, plaintext
+}
+
 func TestAPIKeys_RoundTripAgainstRealPostgres(t *testing.T) {
 	srv, pg := buildPGServer(t)
 
-	// Create a key (dev-open: any Bearer works).
+	// Seed a bearer key directly — dev-open is gone, so something has
+	// to prime the keys table before the first authed call works.
+	_, seedKey := seedAPIKey(t, pg, "ci-seed")
+
+	// Create a second key via the API using the seeded one as Bearer.
 	code, body := doJSON(t, "POST", srv.URL+"/api/v1/api-keys",
 		map[string]string{"name": "ci"},
-		map[string]string{"Authorization": "Bearer anything-dev-open"})
+		map[string]string{"Authorization": "Bearer " + seedKey})
 	require.Equal(t, http.StatusCreated, code)
 	var created map[string]any
 	require.NoError(t, json.Unmarshal(body, &created))
@@ -97,18 +115,17 @@ func TestAPIKeys_RoundTripAgainstRealPostgres(t *testing.T) {
 	require.NotEmpty(t, keyID)
 	require.Contains(t, plainKey, "clv_live_")
 
-	// Now that at least one key exists, dev-open is off. Use the new key.
+	// The new key should also authenticate successfully.
 	code, _ = doJSON(t, "GET", srv.URL+"/api/v1/sessions", nil,
 		map[string]string{"Authorization": "Bearer " + plainKey})
 	require.Equal(t, http.StatusOK, code)
 
-	// An invalid key should now fail (400+ non-empty key count enforces).
+	// An invalid key must 401.
 	code, _ = doJSON(t, "GET", srv.URL+"/api/v1/sessions", nil,
 		map[string]string{"Authorization": "Bearer bogus"})
 	require.Equal(t, http.StatusUnauthorized, code)
 
-	// Revoke via the API. The request still authenticates via the now-
-	// to-be-revoked key; audit should record the revoke.
+	// Revoke via the API.
 	code, _ = doJSON(t, "DELETE", srv.URL+"/api/v1/api-keys/"+keyID, nil,
 		map[string]string{"Authorization": "Bearer " + plainKey})
 	require.Equal(t, http.StatusNoContent, code)
@@ -152,20 +169,14 @@ func TestAPIKeys_RoundTripAgainstRealPostgres(t *testing.T) {
 func TestAudit_PayloadRedactsSecretFields(t *testing.T) {
 	srv, pg := buildPGServer(t)
 
-	// Create a key first (under dev-open) so we have a valid Bearer
-	// for the subsequent write-under-audit.
-	code, body := doJSON(t, "POST", srv.URL+"/api/v1/api-keys",
-		map[string]string{"name": "n1"},
-		map[string]string{"Authorization": "Bearer x"})
-	require.Equal(t, http.StatusCreated, code)
-	var created map[string]any
-	require.NoError(t, json.Unmarshal(body, &created))
-	validKey := created["key"].(string)
+	// Seed a key directly so we have a valid Bearer for the write-
+	// under-audit below.
+	_, validKey := seedAPIKey(t, pg, "audit-seed")
 
 	// Fire a POST /replays with a fake "secret_token" field; expect 400
 	// (source_session_id missing) but the audit row … actually no — 400
 	// doesn't audit. Fire a real valid request instead.
-	code, _ = doJSON(t, "POST", srv.URL+"/api/v1/replays",
+	code, _ := doJSON(t, "POST", srv.URL+"/api/v1/replays",
 		map[string]any{
 			"source_session_id": "sess_x",
 			"target_url":        "http://example.com",
