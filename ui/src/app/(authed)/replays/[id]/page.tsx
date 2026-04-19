@@ -11,8 +11,14 @@ import { PageHeader } from "@/components/page-header";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Table, TD, TH, THead, TRow } from "@/components/ui/table";
 import { useWsTopic } from "@/lib/hooks/use-ws-topic";
-import { api } from "@/lib/api";
-import { nsToMs, relativeTime } from "@/lib/utils";
+import { api, type EventView, type Replay } from "@/lib/api";
+import {
+  compareCaptureVsReplay,
+  rollupByEndpoint,
+  topSlow,
+  type HTTPSample,
+} from "@/lib/stats";
+import { cn, nsToMs, relativeTime } from "@/lib/utils";
 
 interface ProgressSnapshot {
   status: string;
@@ -43,20 +49,29 @@ export default function ReplayDetailPage({
 
   const events = useQuery({
     queryKey: ["replay-events", id],
-    queryFn: () => api.replayEvents(id, 50),
-    // Poll while the replay is firing so rows stream in as the engine
-    // writes them to ClickHouse; once it finishes, do one trailing
-    // refetch (clickhouse flush lag) and then stop.
+    // Fetch a big page so the timeline + rollups cover every replayed
+    // request. ClickHouse reads here are cheap and the panel caps
+    // rendering internally.
+    queryFn: () => api.replayEvents(id, 5_000),
     refetchInterval: (q) => {
       const status = replay.data?.status;
       if (status === "running" || status === "pending") return 2_000;
-      // Trailing refetch: if we haven't seen any rows yet but the replay
-      // is done, poll a few more times while ClickHouse catches up.
       const seen = q.state.data?.count ?? 0;
       const dispatched = replay.data?.events_dispatched ?? 0;
       if (status === "completed" && seen < dispatched) return 2_000;
       return false;
     },
+  });
+
+  // Source session's captured events — needed for the capture-vs-replay
+  // regression comparison + feeds into the event drawer when drilling
+  // down. Scoped to the source session on the replay row; only fetched
+  // once we know which session it is.
+  const sourceId = replay.data?.source_session_id;
+  const capturedEvents = useQuery({
+    queryKey: ["session-events", sourceId],
+    queryFn: () => api.sessionEvents(sourceId!, 5_000),
+    enabled: !!sourceId,
   });
 
   // Live progress via the hub. Only subscribe to `replay.<id>.progress`
@@ -175,6 +190,17 @@ export default function ReplayDetailPage({
               </div>
             </Card>
 
+            <TimelinePanel
+              events={events.data?.events ?? []}
+              replay={r}
+            />
+            <ByEndpointPanel rows={events.data?.events ?? []} />
+            <CaptureVsReplayPanel
+              captured={capturedEvents.data?.events ?? []}
+              replayed={events.data?.events ?? []}
+              sourceId={r.source_session_id}
+            />
+            <SlowestPanel rows={events.data?.events ?? []} />
             <EventsPanel rows={events.data?.events ?? []} note={events.data?.note} />
           </>
         )}
@@ -203,20 +229,351 @@ function MetaRow({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+// Convert a replay event row to the shared HTTPSample shape used by stats.ts.
+type ReplayEventRow = {
+  EventID: string;
+  HTTPMethod: string;
+  HTTPPath: string;
+  HTTPRoute: string;
+  ResponseStatus: number;
+  ResponseDurationNs: number;
+  ActualFireNs: number;
+  LagNs: number;
+  ErrorCode: string;
+};
+function replayToSample(r: ReplayEventRow): HTTPSample {
+  return {
+    method: r.HTTPMethod,
+    route: r.HTTPRoute,
+    path: r.HTTPPath,
+    durationNs: r.ResponseDurationNs,
+    status: r.ResponseStatus,
+  };
+}
+
+/**
+ * Timeline panel. Buckets events by ActualFireNs across the replay
+ * window and renders p95 duration per bucket as a sparkline, overlaid
+ * with an error-rate heatband. Gives you "requests were fast at the
+ * start, then p95 spiked around 2:30" at a glance.
+ */
+function TimelinePanel({
+  events,
+  replay: r,
+}: {
+  events: ReplayEventRow[];
+  replay: Replay;
+}) {
+  const buckets = useMemo(() => {
+    if (events.length === 0) return [];
+    const ns = events
+      .map((e) => e.ActualFireNs)
+      .filter((n) => n > 0);
+    if (ns.length === 0) return [];
+    const minNs = Math.min(...ns);
+    const maxNs = Math.max(...ns);
+    const spanNs = Math.max(maxNs - minNs, 1);
+    const n = Math.min(40, Math.max(8, Math.floor(events.length / 10)));
+    const bucketNs = spanNs / n;
+    type Bucket = {
+      index: number;
+      fromNs: number;
+      count: number;
+      errors: number;
+      durations: number[];
+    };
+    const arr: Bucket[] = Array.from({ length: n }, (_, i) => ({
+      index: i,
+      fromNs: minNs + i * bucketNs,
+      count: 0,
+      errors: 0,
+      durations: [],
+    }));
+    for (const e of events) {
+      if (!e.ActualFireNs) continue;
+      const idx = Math.min(
+        n - 1,
+        Math.floor((e.ActualFireNs - minNs) / bucketNs),
+      );
+      arr[idx].count++;
+      if (e.ResponseStatus >= 400 || e.ErrorCode) arr[idx].errors++;
+      if (e.ResponseDurationNs > 0) arr[idx].durations.push(e.ResponseDurationNs);
+    }
+    return arr.map((b) => {
+      const sorted = b.durations.sort((a, b) => a - b);
+      const p95 =
+        sorted.length > 0
+          ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))]
+          : 0;
+      const max = sorted.length > 0 ? sorted[sorted.length - 1] : 0;
+      return {
+        ...b,
+        p95,
+        max,
+        errorRate: b.count === 0 ? 0 : b.errors / b.count,
+        offsetSec: (b.fromNs - minNs) / 1e9,
+      };
+    });
+  }, [events]);
+
+  if (buckets.length === 0) {
+    return null;
+  }
+  const maxP95 = Math.max(...buckets.map((b) => b.p95), 1);
+  const totalSec =
+    (buckets[buckets.length - 1].offsetSec || 0) +
+    (buckets.length > 1
+      ? buckets[1].offsetSec - buckets[0].offsetSec
+      : 0);
+  return (
+    <Card>
+      <div className="mb-3 flex items-baseline justify-between">
+        <div>
+          <h2 className="text-sm font-semibold">Timeline</h2>
+          <p className="text-xs text-muted-foreground">
+            p95 response time per {r.speedup}× compressed bucket.
+            Hover a bar to see bucket stats.
+          </p>
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {totalSec > 0 ? `${totalSec.toFixed(1)}s total` : ""} ·{" "}
+          {events.length} events
+        </div>
+      </div>
+      <div className="flex h-32 items-end gap-0.5">
+        {buckets.map((b) => {
+          const height = maxP95 > 0 ? (b.p95 / maxP95) * 100 : 0;
+          const errorBand = b.errorRate * 100;
+          return (
+            <div
+              key={b.index}
+              className="group relative flex flex-1 flex-col-reverse"
+              title={`+${b.offsetSec.toFixed(1)}s · ${b.count} req · p95 ${nsToMs(b.p95)} · err ${(b.errorRate * 100).toFixed(0)}%`}
+            >
+              <div
+                className="w-full rounded-sm bg-accent/60 transition group-hover:bg-accent"
+                style={{ height: `${height}%` }}
+              />
+              {b.errorRate > 0 && (
+                <div
+                  className="w-full rounded-sm bg-danger/70"
+                  style={{ height: `${Math.min(errorBand, 15)}%` }}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+        <span>t=0s</span>
+        <span>
+          max p95 in window:{" "}
+          <span className="font-mono text-foreground">
+            {nsToMs(maxP95)}
+          </span>
+        </span>
+        <span>
+          t=
+          {totalSec > 0 ? `${totalSec.toFixed(1)}s` : "?"}
+        </span>
+      </div>
+    </Card>
+  );
+}
+
+function ByEndpointPanel({ rows }: { rows: ReplayEventRow[] }) {
+  const rollup = useMemo(
+    () => rollupByEndpoint(rows.map(replayToSample)),
+    [rows],
+  );
+  if (rollup.length === 0) return null;
+  return (
+    <div>
+      <h2 className="mb-2 text-sm font-semibold">By endpoint</h2>
+      <Table>
+        <THead>
+          <TRow>
+            <TH>Method</TH>
+            <TH>Route</TH>
+            <TH className="text-right">Count</TH>
+            <TH className="text-right">p50</TH>
+            <TH className="text-right">p95</TH>
+            <TH className="text-right">Max</TH>
+            <TH className="text-right">Error rate</TH>
+          </TRow>
+        </THead>
+        <tbody>
+          {rollup.map((r) => (
+            <TRow key={r.key}>
+              <TD className="font-mono">{r.method}</TD>
+              <TD className="max-w-[300px] truncate font-mono text-xs">
+                {r.route}
+              </TD>
+              <TD className="text-right font-mono">{r.count}</TD>
+              <TD className="text-right font-mono">
+                {r.p50 ? nsToMs(r.p50) : "—"}
+              </TD>
+              <TD className="text-right font-mono">
+                {r.p95 ? nsToMs(r.p95) : "—"}
+              </TD>
+              <TD className="text-right font-mono">
+                {r.max ? nsToMs(r.max) : "—"}
+              </TD>
+              <TD
+                className={cn(
+                  "text-right font-mono",
+                  r.errorRate > 0 ? "text-danger" : "",
+                )}
+              >
+                {r.errorRate === 0
+                  ? "—"
+                  : `${(r.errorRate * 100).toFixed(0)}%`}
+              </TD>
+            </TRow>
+          ))}
+        </tbody>
+      </Table>
+    </div>
+  );
+}
+
+function CaptureVsReplayPanel({
+  captured,
+  replayed,
+  sourceId,
+}: {
+  captured: EventView[];
+  replayed: ReplayEventRow[];
+  sourceId: string;
+}) {
+  const rows = useMemo(() => {
+    const capSamples: HTTPSample[] = captured.map((e) => ({
+      method: e.http_method,
+      route: e.http_route,
+      path: e.http_path,
+      durationNs: e.duration_ns ?? 0,
+      status: e.http_status,
+    }));
+    const repSamples = replayed.map(replayToSample);
+    return compareCaptureVsReplay(capSamples, repSamples);
+  }, [captured, replayed]);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div>
+      <div className="mb-2 flex items-baseline justify-between">
+        <h2 className="text-sm font-semibold">Capture vs replay</h2>
+        <Link
+          href={`/sessions/${sourceId}`}
+          className="text-xs text-accent hover:underline"
+        >
+          Source session →
+        </Link>
+      </div>
+      <p className="mb-2 text-xs text-muted-foreground">
+        Per-route p95 at capture time vs at replay time. Positive ∆ means
+        the route got slower under replay load.
+      </p>
+      <Table>
+        <THead>
+          <TRow>
+            <TH>Method</TH>
+            <TH>Route</TH>
+            <TH className="text-right">Capture</TH>
+            <TH className="text-right">Replay</TH>
+            <TH className="text-right">∆ p95</TH>
+            <TH className="text-right">Count (cap/rep)</TH>
+          </TRow>
+        </THead>
+        <tbody>
+          {rows.slice(0, 30).map((r) => (
+            <TRow key={r.key}>
+              <TD className="font-mono">{r.method}</TD>
+              <TD className="max-w-[280px] truncate font-mono text-xs">
+                {r.route}
+              </TD>
+              <TD className="text-right font-mono">
+                {r.capturedP95 ? nsToMs(r.capturedP95) : "—"}
+              </TD>
+              <TD className="text-right font-mono">
+                {r.replayedP95 ? nsToMs(r.replayedP95) : "—"}
+              </TD>
+              <TD
+                className={cn(
+                  "text-right font-mono",
+                  r.deltaPct === null
+                    ? "text-muted-foreground"
+                    : r.deltaPct > 20
+                    ? "text-danger"
+                    : r.deltaPct > 5
+                    ? "text-warning"
+                    : r.deltaPct < -5
+                    ? "text-success"
+                    : "text-muted-foreground",
+                )}
+              >
+                {r.deltaPct === null
+                  ? "—"
+                  : `${r.deltaPct >= 0 ? "+" : ""}${r.deltaPct.toFixed(0)}%`}
+              </TD>
+              <TD className="text-right font-mono text-muted-foreground">
+                {r.captureCount}/{r.replayCount}
+              </TD>
+            </TRow>
+          ))}
+        </tbody>
+      </Table>
+    </div>
+  );
+}
+
+function SlowestPanel({ rows }: { rows: ReplayEventRow[] }) {
+  const top = useMemo(() => topSlow(rows.map(replayToSample), 10), [rows]);
+  if (top.length === 0) return null;
+  return (
+    <div>
+      <h2 className="mb-2 text-sm font-semibold">Top 10 slowest</h2>
+      <Table>
+        <THead>
+          <TRow>
+            <TH>#</TH>
+            <TH>Method</TH>
+            <TH>Route</TH>
+            <TH className="text-right">Status</TH>
+            <TH className="text-right">Duration</TH>
+          </TRow>
+        </THead>
+        <tbody>
+          {top.map((s, i) => (
+            <TRow key={i}>
+              <TD className="font-mono text-muted-foreground">{i + 1}</TD>
+              <TD className="font-mono">{s.method ?? "—"}</TD>
+              <TD className="max-w-[300px] truncate font-mono text-xs">
+                {s.route || s.path || "—"}
+              </TD>
+              <TD
+                className={cn(
+                  "text-right font-mono",
+                  (s.status ?? 0) >= 400 ? "text-danger" : "",
+                )}
+              >
+                {s.status ?? "—"}
+              </TD>
+              <TD className="text-right font-mono">{nsToMs(s.durationNs)}</TD>
+            </TRow>
+          ))}
+        </tbody>
+      </Table>
+    </div>
+  );
+}
+
 function EventsPanel({
   rows,
   note,
 }: {
-  rows: Array<{
-    EventID: string;
-    HTTPMethod: string;
-    HTTPPath: string;
-    HTTPRoute: string;
-    ResponseStatus: number;
-    ResponseDurationNs: number;
-    LagNs: number;
-    ErrorCode: string;
-  }>;
+  rows: ReplayEventRow[];
   note?: string;
 }) {
   return (
