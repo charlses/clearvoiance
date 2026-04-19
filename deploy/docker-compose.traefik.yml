@@ -7,9 +7,14 @@
 #     -f deploy/docker-compose.traefik.yml \
 #     up -d --build
 #
-# Exposes the engine's HTTP control plane and the dashboard via Traefik.
-# The gRPC port (SDK target) stays on loopback — separate TCP routing is
-# out of scope here.
+# Exposes the engine's HTTP control plane, the engine's gRPC port (for
+# SDK clients that can't share a Docker network with the engine), and
+# the dashboard — all over TLS via Traefik.
+#
+# gRPC routing uses Traefik's HTTP router with scheme=h2c so Traefik
+# terminates TLS at the edge and forwards HTTP/2 cleartext to the
+# engine's plain gRPC port. SDK clients connect with
+#   engine: { url: "<TRAEFIK_GRPC_HOST>:443", tls: true, apiKey: ... }
 #
 # Prereqs:
 #   - External docker network named ${TRAEFIK_NETWORK} (default traefik_proxy)
@@ -27,7 +32,17 @@ services:
       - "traefik.http.routers.clearvoiance-api.rule=Host(`${TRAEFIK_API_HOST}`)"
       - "traefik.http.routers.clearvoiance-api.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
       - "traefik.http.routers.clearvoiance-api.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.clearvoiance-api.service=clearvoiance-api"
       - "traefik.http.services.clearvoiance-api.loadbalancer.server.port=9101"
+      # gRPC router (scheme=h2c → Traefik terminates TLS, forwards HTTP/2
+      # cleartext to the engine's gRPC port). SDK clients connect at
+      # grpc://${TRAEFIK_GRPC_HOST}:443 with tls:true.
+      - "traefik.http.routers.clearvoiance-grpc.rule=Host(`${TRAEFIK_GRPC_HOST}`)"
+      - "traefik.http.routers.clearvoiance-grpc.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.clearvoiance-grpc.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.clearvoiance-grpc.service=clearvoiance-grpc"
+      - "traefik.http.services.clearvoiance-grpc.loadbalancer.server.port=9100"
+      - "traefik.http.services.clearvoiance-grpc.loadbalancer.server.scheme=h2c"
 
   ui:
     networks:
