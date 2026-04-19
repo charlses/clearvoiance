@@ -1,0 +1,199 @@
+export const metadata = {
+  title: "Self-hosting",
+  description:
+    "Deploy the full clearvoiance stack — engine + dashboard + stores — with docker-compose. Includes optional Traefik config and the DB observer.",
+};
+
+# Self-hosting
+
+The engine and dashboard are self-hosted by design. `deploy/docker-compose.yml`
+brings up the full stack — ClickHouse, Postgres, MinIO, the engine, and the
+Next.js dashboard — behind loopback by default. Every password, port, and
+URL is driven by a single `.env` file.
+
+## One-liner setup
+
+```bash
+git clone https://github.com/charlses/clearvoiance
+cd clearvoiance
+cp deploy/.env.example deploy/.env
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
+```
+
+Default endpoints (all `127.0.0.1`-bound):
+
+- **Dashboard** — `http://127.0.0.1:3000`
+- **Engine REST + WS** — `http://127.0.0.1:9101`  (`/healthz`, `/api/v1/*`, `/ws`, `/docs`)
+- **Engine gRPC** — `127.0.0.1:9100`  (the SDK endpoint)
+- **MinIO console** — `http://127.0.0.1:9001`
+- **Postgres** — `127.0.0.1:5499`
+- **ClickHouse HTTP** — `127.0.0.1:8123`
+
+## Environment variables
+
+Every variable has a working dev default, so `cp + up -d` just works
+out of the box. Change the passwords before exposing anything beyond
+localhost.
+
+### Core
+
+```bash
+CLEARVOIANCE_VERSION=0.0.0-dev         # image tag applied to engine + ui builds
+CLEARVOIANCE_API_URL=http://localhost:9101   # baked into the dashboard at BUILD time
+```
+
+`CLEARVOIANCE_API_URL` is passed to the dashboard as a build-arg, not a
+runtime env. Next.js inlines `NEXT_PUBLIC_*` at build, so changing the
+engine URL requires rerunning `docker compose build ui`.
+
+### Datastores
+
+```bash
+POSTGRES_USER=clearvoiance
+POSTGRES_PASSWORD=dev
+POSTGRES_DB=clearvoiance
+POSTGRES_HOST_PORT=5499
+
+CLICKHOUSE_USER=default
+CLICKHOUSE_PASSWORD=dev
+CLICKHOUSE_DB=clearvoiance
+CLICKHOUSE_HTTP_PORT=8123
+CLICKHOUSE_NATIVE_PORT=9000
+
+MINIO_ROOT_USER=dev
+MINIO_ROOT_PASSWORD=devdevdev
+MINIO_BUCKET=clearvoiance-blobs
+MINIO_REGION=us-east-1
+MINIO_PATH_STYLE=true
+MINIO_API_PORT=9002
+MINIO_CONSOLE_PORT=9001
+```
+
+### Services
+
+```bash
+ENGINE_GRPC_PORT=9100
+ENGINE_HTTP_PORT=9101
+DASHBOARD_PORT=3000
+```
+
+## Going beyond localhost with Traefik
+
+The compose file ships with Traefik labels commented on both engine and
+dashboard services. To expose over TLS:
+
+### 1. Uncomment the labels
+
+In `deploy/docker-compose.yml`, uncomment the `networks:` and `labels:`
+blocks on `engine:` and `ui:`, plus the top-level `networks:` block.
+
+### 2. Set Traefik vars in `.env`
+
+```bash
+TRAEFIK_NETWORK=traefik_proxy
+TRAEFIK_ENTRYPOINT=websecure
+TRAEFIK_CERT_RESOLVER=le
+TRAEFIK_API_HOST=api.clearvoiance.example.com
+TRAEFIK_UI_HOST=app.clearvoiance.example.com
+```
+
+### 3. Join or create the external network
+
+```bash
+docker network create traefik_proxy   # or whatever TRAEFIK_NETWORK is set to
+```
+
+If you already run Traefik elsewhere on this host, reuse that network
+name instead — the compose file will attach both services to it.
+
+### 4. Rebuild the dashboard with the public URL
+
+`CLEARVOIANCE_API_URL` bakes into the JS bundle:
+
+```bash
+# in deploy/.env:
+CLEARVOIANCE_API_URL=https://api.clearvoiance.example.com
+
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml build ui
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
+```
+
+## Optional: DB observer
+
+The DB observer is shipped in the engine image but not started by
+default. It polls `pg_stat_activity` on *your* application's Postgres
+and correlates slow queries to replay events via the `application_name`
+tag that `instrumentPg` sets.
+
+### 1. Uncomment the `db-observer` service
+
+In `deploy/docker-compose.yml`, uncomment the `db-observer:` block near
+the bottom.
+
+### 2. Set the SUT Postgres DSN in `.env`
+
+```bash
+CLEARVOIANCE_OBSERVER_POSTGRES_DSN=postgres://readonly:pw@sut-postgres:5432/app?sslmode=disable
+CLEARVOIANCE_OBSERVER_CLICKHOUSE_DSN=clickhouse://default:dev@clickhouse:9000/clearvoiance
+```
+
+A read-only role with `SELECT` on `pg_stat_activity` is enough. The SUT
+Postgres has to be reachable from the compose network — either it's
+another container, or you use `host.docker.internal` / an external IP.
+
+### 3. Bring the stack up
+
+```bash
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d db-observer
+```
+
+Slow queries from the SUT now show up in the dashboard's
+`/replays/<id>/db` tab, grouped by query fingerprint and correlated to
+the replay event that triggered them.
+
+## Operational notes
+
+### Data durability
+
+- **ClickHouse, Postgres, MinIO** all mount named volumes
+  (`clickhouse_data`, `postgres_data`, `minio_data`). `docker compose
+  down` preserves them; `down -v` wipes them.
+- The `minio-bootstrap` one-shot auto-creates the blob bucket on first
+  boot. It's safe to rerun — `mc mb -p` is idempotent.
+
+### Engine behavior without stores
+
+If you clear `CLEARVOIANCE_POSTGRES_DSN` the engine runs in ephemeral
+mode: sessions are in-memory only, SDK WALs can't drain across engine
+restarts. Likewise, without `CLEARVOIANCE_CLICKHOUSE_DSN` events are
+acked but dropped on the floor. Both are dev-only modes — production
+deployments must set both.
+
+### IPv6
+
+The compose healthchecks use `127.0.0.1` rather than `localhost` on
+purpose — on kernels where IPv6 is disabled (many cloud VMs),
+`localhost` resolves to `::1` and ClickHouse/MinIO's v4-only binds show
+up as "connection refused" despite being healthy on v4.
+
+### Upgrading
+
+Point `CLEARVOIANCE_VERSION` at the release you want and rebuild:
+
+```bash
+# in deploy/.env:
+CLEARVOIANCE_VERSION=0.2.0
+
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml build
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
+```
+
+Schema migrations on ClickHouse / Postgres run on first boot of the
+new engine. Roll back by pointing at an older tag; data volumes are
+forward-compatible within a minor version.
+
+## What's next
+
+- **[Quickstart](/docs/quickstart)** — instrument your first service.
+- **[Core concepts](/docs/concepts)** — how capture / replay / hermetic /
+  observer fit together.

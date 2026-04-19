@@ -8,21 +8,28 @@ export const metadata = {
 
 From zero to "I just replayed my own traffic" in about five minutes.
 
-## 1. Run the engine locally
+## 1. Run the engine + dashboard locally
 
 The engine needs ClickHouse, Postgres, and MinIO. The repo ships a
-docker-compose stack that brings all three up alongside the engine
-binary:
+docker-compose stack that brings those up alongside the engine binary
+and the Next.js dashboard:
 
 ```bash
 git clone https://github.com/charlses/clearvoiance
-cd clearvoiance/deploy
-docker-compose up -d
+cd clearvoiance
+cp deploy/.env.example deploy/.env
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
 ```
 
-The engine's gRPC endpoint is now at `127.0.0.1:9100` and the REST
-control plane + WebSocket hub at `127.0.0.1:9101`. Visit
-`http://127.0.0.1:9101/docs` to see the Swagger UI.
+That's it — every password, port, and URL is driven from the `.env`
+you just copied. Default endpoints (all bound to `127.0.0.1`):
+
+- **Dashboard** — `http://127.0.0.1:3000`
+- **Engine gRPC** (SDK target) — `127.0.0.1:9100`
+- **Engine REST + WS** — `http://127.0.0.1:9101`  (Swagger UI at `/docs`)
+
+For TLS, Traefik, or tuning the stack for production, see
+**[Deployment](/docs/deployment)**.
 
 ## 2. Install the SDK in your app
 
@@ -87,7 +94,7 @@ for i in $(seq 1 20); do curl -s http://localhost:3000/hello/alice; done
 
 ## 5. See it land
 
-Open the dashboard at `http://127.0.0.1:3100` (part of the
+Open the dashboard at `http://127.0.0.1:3000` (part of the
 docker-compose stack). Log in with any non-empty API key — dev-open
 mode accepts anything until you provision a real one. You'll see the
 active session with its event count ticking up.

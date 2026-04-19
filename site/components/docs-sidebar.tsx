@@ -20,6 +20,10 @@ const SECTIONS: Section[] = [
       { href: "/docs/concepts", label: "Core concepts" },
     ],
   },
+  {
+    title: "Self-host",
+    items: [{ href: "/docs/deployment", label: "Deployment" }],
+  },
 ];
 
 export function DocsSidebar() {

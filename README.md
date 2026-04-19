@@ -33,6 +33,32 @@ Phases 0 through 6 are shipped end-to-end, all green in CI (14 jobs: Go unit + G
 
 Remaining phases per [`plan/`](./plan/README.md): **Phase 7** (more SDK languages / framework adapters) and **Phase 8** (OSS launch + docs site).
 
+## Self-host in one command
+
+The full stack — engine, dashboard, ClickHouse, Postgres, MinIO — runs
+behind loopback on your machine with a single compose up. Every
+password, port, and URL is driven by `deploy/.env`.
+
+```bash
+git clone https://github.com/charlses/clearvoiance
+cd clearvoiance
+cp deploy/.env.example deploy/.env
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
+```
+
+Default endpoints:
+
+| Service             | URL                       |
+|---------------------|---------------------------|
+| Dashboard           | `http://127.0.0.1:3000`   |
+| Engine REST + WS    | `http://127.0.0.1:9101`   |
+| Engine gRPC (SDK)   | `127.0.0.1:9100`          |
+
+`deploy/docker-compose.yml` ships commented Traefik labels for both the
+engine and dashboard, plus an optional `db-observer` block — see the
+[Deployment docs](https://clearvoiance.io/docs/deployment) for TLS
+setup, DSN wiring, and upgrade flow.
+
 ## Architecture at a glance
 
 ```
