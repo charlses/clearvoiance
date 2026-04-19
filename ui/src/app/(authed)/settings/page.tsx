@@ -1,7 +1,8 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, Copy, Trash2 } from "lucide-react";
+import { AlertCircle, Copy, LogOut, Trash2 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -9,11 +10,12 @@ import { Card } from "@/components/ui/card";
 import { Code } from "@/components/ui/code";
 import { PageHeader } from "@/components/page-header";
 import { Table, TD, TH, THead, TRow } from "@/components/ui/table";
-import { api, type APIKey } from "@/lib/api";
+import { api, HTTPError, type APIKey } from "@/lib/api";
 import { relativeTime } from "@/lib/utils";
 
 export default function SettingsPage() {
   const qc = useQueryClient();
+  const router = useRouter();
   const keys = useQuery({
     queryKey: ["api-keys"],
     queryFn: api.listAPIKeys,
@@ -22,6 +24,53 @@ export default function SettingsPage() {
     queryKey: ["config"],
     queryFn: api.config,
   });
+  const me = useQuery({
+    queryKey: ["me"],
+    queryFn: api.me,
+  });
+
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [pwdError, setPwdError] = useState<string | null>(null);
+  const [pwdSuccess, setPwdSuccess] = useState(false);
+
+  const changePwd = useMutation({
+    mutationFn: ({ current, next }: { current: string; next: string }) =>
+      api.changePassword(current, next),
+    onSuccess: () => {
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setPwdError(null);
+      setPwdSuccess(true);
+      setTimeout(() => setPwdSuccess(false), 4000);
+    },
+    onError: (err) => {
+      if (err instanceof HTTPError) setPwdError(err.apiError.message);
+      else setPwdError(err instanceof Error ? err.message : String(err));
+    },
+  });
+
+  const logout = useMutation({
+    mutationFn: () => api.logout(),
+    onSuccess: () => router.replace("/login"),
+    onError: () => router.replace("/login"),
+  });
+
+  function onPwdSubmit(e: FormEvent) {
+    e.preventDefault();
+    setPwdError(null);
+    if (newPassword.length < 10) {
+      setPwdError("New password must be at least 10 characters.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPwdError("New passwords don't match.");
+      return;
+    }
+    changePwd.mutate({ current: currentPassword, next: newPassword });
+  }
 
   const [name, setName] = useState("");
   const [justCreated, setJustCreated] = useState<{
@@ -51,8 +100,96 @@ export default function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Settings" description="API keys + engine config" />
+      <PageHeader title="Settings" description="Account, API keys, engine config" />
       <div className="space-y-6 p-6">
+        <section>
+          <h2 className="mb-2 text-sm font-semibold">Account</h2>
+          <Card>
+            <div className="grid gap-y-2 text-sm md:grid-cols-2">
+              <Row label="Email" value={me.data?.email ?? "—"} />
+              <Row label="Role" value={me.data?.role ?? "—"} />
+              <Row
+                label="Last login"
+                value={
+                  me.data?.last_login_at ? relativeTime(me.data.last_login_at) : "—"
+                }
+              />
+              <div className="flex items-baseline gap-3">
+                <span className="w-28 shrink-0 text-xs uppercase tracking-wide text-muted-foreground">
+                  Session
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => logout.mutate()}
+                  disabled={logout.isPending}
+                >
+                  <LogOut className="mr-1 h-3 w-3" />
+                  {logout.isPending ? "Signing out…" : "Sign out"}
+                </Button>
+              </div>
+            </div>
+          </Card>
+          <Card className="mt-3">
+            <form onSubmit={onPwdSubmit} className="space-y-3">
+              <h3 className="text-sm font-medium">Change password</h3>
+              <div className="grid gap-3 md:grid-cols-3">
+                <input
+                  type="password"
+                  required
+                  autoComplete="current-password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  placeholder="Current password"
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+                />
+                <input
+                  type="password"
+                  required
+                  minLength={10}
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="New password (10+ chars)"
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+                />
+                <input
+                  type="password"
+                  required
+                  minLength={10}
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Confirm new password"
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+                />
+              </div>
+              {pwdError && (
+                <div className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
+                  {pwdError}
+                </div>
+              )}
+              {pwdSuccess && (
+                <div className="rounded-md border border-success/30 bg-success/10 px-3 py-2 text-sm text-success">
+                  Password updated. Other sessions signed out.
+                </div>
+              )}
+              <Button
+                type="submit"
+                size="sm"
+                disabled={
+                  changePwd.isPending ||
+                  !currentPassword ||
+                  !newPassword ||
+                  !confirmPassword
+                }
+              >
+                {changePwd.isPending ? "Updating…" : "Update password"}
+              </Button>
+            </form>
+          </Card>
+        </section>
+
         <section>
           <h2 className="mb-2 text-sm font-semibold">Engine</h2>
           <Card>

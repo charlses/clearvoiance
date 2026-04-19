@@ -142,10 +142,29 @@ type incoming struct {
 }
 
 // Handler returns the http.HandlerFunc that upgrades a request to a
-// websocket connection. Auth is in-protocol: the first message on a new
-// connection must be `{"type":"auth","api_key":"..."}`.
-func Handler(h *Hub, keys metadata.APIKeys) http.HandlerFunc {
+// websocket connection. Auth accepts either path:
+//
+//  1. Session cookie (clv_session) carried on the upgrade request — the
+//     dashboard's default flow. When present + valid, auth is complete
+//     before the upgrade; the client doesn't send an auth message.
+//  2. In-protocol `{"type":"auth","api_key":"..."}` as the first message —
+//     used by programmatic clients that don't have a session.
+//
+// Either way the server sends `{topic:"__auth", data:{ok:true}}` once
+// auth is settled.
+func Handler(h *Hub, keys metadata.APIKeys, sessions metadata.UserSessions) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Resolve cookie auth BEFORE upgrading so we can skip the
+		// in-protocol handshake on authed dashboards.
+		cookieAuthOK := false
+		if sessions != nil {
+			if cookie, err := r.Cookie(rest.SessionCookieName); err == nil && cookie.Value != "" {
+				if _, err := sessions.Lookup(r.Context(), rest.HashSessionToken(cookie.Value)); err == nil {
+					cookieAuthOK = true
+				}
+			}
+		}
+
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 			// OriginPatterns: ["*"] makes browser-side dev easy. For
 			// production deploys, operators should front the engine with
@@ -168,25 +187,27 @@ func Handler(h *Hub, keys metadata.APIKeys) http.HandlerFunc {
 		}
 		defer h.removeAll(c)
 
-		// --- Auth handshake. First message must carry a valid api_key. ---
-		authCtx, authCancel := context.WithTimeout(ctx, 5*time.Second)
-		_, firstMsg, err := conn.Read(authCtx)
-		authCancel()
-		if err != nil {
-			_ = conn.Close(websocket.StatusPolicyViolation, "auth timeout")
-			return
-		}
-		var authMsg incoming
-		if err := json.Unmarshal(firstMsg, &authMsg); err != nil || authMsg.Type != "auth" {
-			_ = conn.Close(websocket.StatusPolicyViolation, "expected {type:auth}")
-			return
-		}
-		if err := checkAPIKey(ctx, keys, authMsg.APIKey); err != nil {
-			_ = conn.Close(websocket.StatusPolicyViolation, err.Error())
-			return
+		if !cookieAuthOK {
+			// --- In-protocol auth. First message must carry a valid api_key. ---
+			authCtx, authCancel := context.WithTimeout(ctx, 5*time.Second)
+			_, firstMsg, err := conn.Read(authCtx)
+			authCancel()
+			if err != nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "auth timeout")
+				return
+			}
+			var authMsg incoming
+			if err := json.Unmarshal(firstMsg, &authMsg); err != nil || authMsg.Type != "auth" {
+				_ = conn.Close(websocket.StatusPolicyViolation, "expected {type:auth}")
+				return
+			}
+			if err := checkAPIKey(ctx, keys, authMsg.APIKey); err != nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, err.Error())
+				return
+			}
 		}
 
-		// Ack the auth.
+		// Ack the auth (whether cookie-based or in-protocol).
 		c.tryEnqueue("__auth", map[string]any{"ok": true})
 
 		// --- Writer pump. ---

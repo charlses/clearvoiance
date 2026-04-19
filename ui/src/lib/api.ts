@@ -1,7 +1,11 @@
-// Thin typed client for the engine's REST API. Reads the base URL from the
-// NEXT_PUBLIC_CLEARVOIANCE_API env var (default: http://127.0.0.1:9101) and
-// the API key from localStorage ("clv.api_key"). For dev-open engines any
-// non-empty key works.
+// Thin typed client for the engine's REST API. Reads the base URL from
+// NEXT_PUBLIC_CLEARVOIANCE_API (default: http://127.0.0.1:9101). Auth is
+// via session cookie (clv_session) — every request goes out with
+// credentials:"include" so the cookie travels cross-origin under CORS.
+//
+// API keys are managed from inside an authed session (the /settings/api-keys
+// page), but the dashboard itself never logs in with an API key. That path
+// is for SDK / programmatic clients only.
 //
 // We hand-roll this instead of generating from OpenAPI so the surface stays
 // tight + the spec can evolve without a codegen step. Shapes mirror what
@@ -53,7 +57,17 @@ export interface APIError {
   details?: Record<string, unknown>;
 }
 
-const API_KEY_STORAGE = "clv.api_key";
+export interface User {
+  id: string;
+  email: string;
+  role: string;
+  created_at: string;
+  last_login_at?: string;
+}
+
+export interface AuthState {
+  setup_required: boolean;
+}
 
 export function apiBaseURL(): string {
   return (
@@ -78,17 +92,6 @@ export function docsURL(path = ""): string {
   return path ? `${base}${path.startsWith("/") ? path : "/" + path}` : base;
 }
 
-export function storedAPIKey(): string | null {
-  if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(API_KEY_STORAGE);
-}
-
-export function setAPIKey(key: string | null): void {
-  if (typeof window === "undefined") return;
-  if (!key) window.localStorage.removeItem(API_KEY_STORAGE);
-  else window.localStorage.setItem(API_KEY_STORAGE, key);
-}
-
 export class HTTPError extends Error {
   constructor(
     public status: number,
@@ -105,8 +108,6 @@ async function req<T>(
 ): Promise<T> {
   const parse = opts.parse ?? "json";
   const headers = new Headers(init.headers ?? {});
-  const key = storedAPIKey();
-  if (key) headers.set("Authorization", `Bearer ${key}`);
   if (init.body && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
@@ -114,6 +115,9 @@ async function req<T>(
     ...init,
     headers,
     cache: "no-store",
+    // Sends the clv_session cookie on cross-origin requests. The engine's
+    // CORS middleware must include the dashboard origin + Allow-Credentials.
+    credentials: "include",
   });
   if (!resp.ok) {
     // Error envelope shape: {error: {code, message, details}}
@@ -132,6 +136,33 @@ async function req<T>(
 }
 
 export const api = {
+  // --- Auth -------------------------------------------------------------
+  authState: () => req<AuthState>(`/api/v1/auth/state`),
+  setup: (email: string, password: string) =>
+    req<{ user: User }>(`/api/v1/auth/setup`, {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  login: (email: string, password: string) =>
+    req<{ user: User }>(`/api/v1/auth/login`, {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  logout: () =>
+    req<{ status: string }>(`/api/v1/auth/logout`, {
+      method: "POST",
+      body: "{}",
+    }),
+  me: () => req<User>(`/api/v1/auth/me`),
+  changePassword: (current: string, next: string) =>
+    req<{ status: string }>(`/api/v1/auth/change-password`, {
+      method: "POST",
+      body: JSON.stringify({
+        current_password: current,
+        new_password: next,
+      }),
+    }),
+
   // --- Health -----------------------------------------------------------
   health: () => req<{ status: string }>(`/api/v1/health`),
   version: () =>

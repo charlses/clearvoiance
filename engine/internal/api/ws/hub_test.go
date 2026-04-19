@@ -25,7 +25,7 @@ func buildWSServer(t *testing.T) (*ws.Hub, *httptest.Server) {
 	log := slog.New(slog.NewTextHandler(discardWriter{}, nil))
 	hub := ws.NewHub(log)
 	mux := http.NewServeMux()
-	mux.Handle("/ws", ws.Handler(hub, metadata.Noop{}.APIKeys()))
+	mux.Handle("/ws", ws.Handler(hub, metadata.Noop{}.APIKeys(), metadata.Noop{}.UserSessions()))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return hub, srv

@@ -3,16 +3,19 @@
 /**
  * Thin WebSocket client for the engine's /ws hub.
  *
- * Protocol:
- *   - Client sends {type:"auth", api_key} on open.
- *   - Server acks with {type:"message", topic:"__auth", data:{ok:true}}.
+ * Auth: the dashboard uses cookie auth — the browser sends clv_session on
+ * the WS handshake automatically, and the server authenticates at upgrade
+ * time with no in-protocol handshake required. The server acks with
+ * {type:"message", topic:"__auth", data:{ok:true}} either way.
+ *
+ * Protocol after auth:
  *   - Client sends {type:"subscribe", topic} to start receiving pushes.
  *   - Server sends {type:"message", topic, data: ...} for each publish.
  *
  * Reconnects with capped backoff on transport failures.
  */
 
-import { storedAPIKey, wsBaseURL } from "./api";
+import { wsBaseURL } from "./api";
 
 type Handler<T = unknown> = (data: T) => void;
 
@@ -37,14 +40,12 @@ export function createWSClient(): WSClient {
 
   const connect = (): void => {
     if (closed) return;
-    const key = storedAPIKey();
-    if (!key) return;
     ws = new WebSocket(`${wsBaseURL()}/ws`);
 
     ws.addEventListener("open", () => {
       reconnectAttempt = 0;
-      ws?.send(JSON.stringify({ type: "auth", api_key: key }));
-      // Resend every active subscription so reconnects recover topics.
+      // Server auths from the session cookie carried on the upgrade
+      // request; no in-protocol auth message needed from the browser.
       for (const topic of handlers.keys()) {
         ws?.send(JSON.stringify({ type: "subscribe", topic }));
         pendingSubscribes.delete(topic);

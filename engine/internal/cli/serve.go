@@ -237,7 +237,7 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 	root.Get("/healthz", func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
 		_, _ = w.Write([]byte("ok\n"))
 	})
-	root.Handle("/ws", ws.Handler(wsHub, meta.APIKeys()))
+	root.Handle("/ws", ws.Handler(wsHub, meta.APIKeys(), meta.UserSessions()))
 
 	httpSrv := &stdhttp.Server{
 		Addr:              opts.httpAddr,

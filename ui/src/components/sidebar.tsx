@@ -1,5 +1,6 @@
 "use client";
 
+import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -13,7 +14,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { setAPIKey } from "@/lib/api";
+import { api } from "@/lib/api";
 
 interface NavItem {
   href: string;
@@ -31,9 +32,15 @@ const NAV: NavItem[] = [
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
 
-  function logout() {
-    setAPIKey(null);
+  async function logout() {
+    // Best-effort server-side logout; the cookie clears regardless.
+    try {
+      await api.logout();
+    } catch {
+      /* ignore — the redirect below still signs the user out client-side */
+    }
     router.replace("/login");
   }
 
@@ -68,8 +75,10 @@ export function Sidebar() {
       </nav>
       <div className="mt-auto flex flex-col gap-1 border-t border-border pt-3">
         <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
-          <CircleUser className="h-3.5 w-3.5" />
-          <span>operator</span>
+          <CircleUser className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate" title={me.data?.email}>
+            {me.data?.email ?? "…"}
+          </span>
         </div>
         <button
           type="button"

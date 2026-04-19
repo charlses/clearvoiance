@@ -95,9 +95,14 @@ for i in $(seq 1 20); do curl -s http://localhost:3000/hello/alice; done
 ## 5. See it land
 
 Open the dashboard at `http://127.0.0.1:3000` (part of the
-docker-compose stack). Log in with any non-empty API key — dev-open
-mode accepts anything until you provision a real one. You'll see the
-active session with its event count ticking up.
+docker-compose stack). First visit shows a setup wizard — create an
+admin with email + password, submit, you're in. Next visits go
+straight to the login screen. You'll see the active session with its
+event count ticking up.
+
+Need to mint an API key for the SDK `engine.apiKey` config? Once
+you're signed in, **Settings → API keys → Create**. The plaintext is
+shown once; copy it into your SDK config.
 
 ## 6. Stop the session + replay it
 

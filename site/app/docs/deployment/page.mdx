@@ -29,6 +29,40 @@ Default endpoints (all `127.0.0.1`-bound):
 - **Postgres** — `127.0.0.1:5499`
 - **ClickHouse HTTP** — `127.0.0.1:8123`
 
+## First-run setup
+
+The dashboard has a first-visit setup wizard. Open the dashboard URL
+and you'll land on `/setup` — fill in an email and password, submit,
+you're logged in. That's it. No CLI, no env-var dance.
+
+The wizard only appears when the `users` table is empty. Once the
+admin is created, any subsequent visit lands on `/login` instead.
+
+### Security note on the setup wizard
+
+Whoever fills in the form first becomes the admin. In a standard
+self-host that's you, but **don't publish the URL before you've
+claimed the admin account**. If the deploy goes live and the page
+sits there for days, anyone who finds it could take it over. The
+usual practice:
+
+1. Deploy behind a private hostname or a loopback tunnel
+2. Hit `/setup` yourself
+3. Expose the URL publicly
+
+### Recovering if something goes wrong
+
+Forgot the password, or someone else claimed admin?
+
+```bash
+# blow away users + sessions; next visit is the setup wizard again
+docker compose -f deploy/docker-compose.yml exec postgres \
+  psql -U clearvoiance -d clearvoiance \
+  -c "DELETE FROM user_sessions; DELETE FROM users;"
+```
+
+Captured sessions, replays, and API keys are untouched.
+
 ## Environment variables
 
 Every variable has a working dev default, so `cp + up -d` just works
@@ -48,6 +82,23 @@ env — Next.js inlines `NEXT_PUBLIC_*` at build. Changing either
 requires `docker compose build ui`. `CLEARVOIANCE_DOCS_URL` is only
 worth touching if you run a fork with its own docs site; leave it on
 the default otherwise.
+
+### Dashboard session cookie + CORS
+
+Only needed when the dashboard and engine are on different subdomains
+(e.g. behind Traefik). On loopback everything is same-origin — leave
+these empty.
+
+```bash
+CLEARVOIANCE_COOKIE_DOMAIN=.example.com     # parent of both subdomains
+CLEARVOIANCE_COOKIE_SECURE=true             # force Secure behind TLS terminators
+CLEARVOIANCE_DASHBOARD_ORIGIN=https://app.example.com  # CORS allow-list
+```
+
+The cookie is HttpOnly + SameSite=Lax + Secure (auto when the request
+is HTTPS). CORS is set up to allow credentials only from the listed
+origins — leaving the allow-list empty disables CORS entirely, which
+is the correct default for same-origin / SDK-only deploys.
 
 ### Datastores
 
