@@ -1,6 +1,6 @@
 {
   "name": "@clearvoiance/node",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Node.js SDK for clearvoiance — capture traffic from your backend and replay it at N× speed.",
   "license": "Apache-2.0",
   "author": "Davit Tavadze",
@@ -178,7 +178,7 @@
     "sync-version": "node scripts/sync-version.mjs"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=20"
   },
   "devDependencies": {
     "@prisma/client": "^7.7.0",

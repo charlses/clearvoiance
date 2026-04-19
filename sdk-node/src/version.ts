@@ -4,4 +4,4 @@
  * bump the version in package.json and re-run `pnpm build` (or let the
  * prebuild hook sync automatically).
  */
-export const SDK_VERSION = "0.1.1";
+export const SDK_VERSION = "0.1.2";
