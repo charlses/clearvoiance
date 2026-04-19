@@ -100,6 +100,13 @@ message StartSessionRequest {
   string api_key = 2;
   map<string, string> labels = 3;
   SessionConfig config = 4;
+  // Optional: caller-supplied session ID. When set AND the engine has
+  // already pre-allocated this ID (e.g. via ControlService when the
+  // dashboard clicks "Start capture" on a remote-controlled client),
+  // the engine attaches the SDK to that pre-created session instead of
+  // minting a fresh one. When unset (the default SDK-driven flow), the
+  // engine mints a new ID as before.
+  string preferred_session_id = 5;
 }
 
 message SessionConfig {

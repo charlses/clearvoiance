@@ -69,6 +69,9 @@ func (p *Postgres) Users() Users { return &pgUsers{pool: p.pool} }
 // UserSessions returns the dashboard-sessions surface.
 func (p *Postgres) UserSessions() UserSessions { return &pgUserSessions{pool: p.pool} }
 
+// Monitors returns the remote-control monitors surface.
+func (p *Postgres) Monitors() Monitors { return &pgMonitors{pool: p.pool} }
+
 // Close drains the connection pool.
 func (p *Postgres) Close() error {
 	if p.pool != nil {
@@ -619,4 +622,116 @@ func isPgUniqueViolation(err error) bool {
 		return ss.SQLState() == pgUniqueViolation
 	}
 	return false
+}
+
+// --- monitors ---
+
+type pgMonitors struct {
+	pool *pgxpool.Pool
+}
+
+func (m *pgMonitors) Upsert(ctx context.Context, row MonitorRow) error {
+	labels, err := json.Marshal(row.Labels)
+	if err != nil {
+		return fmt.Errorf("marshal labels: %w", err)
+	}
+	// ON CONFLICT: preserve capture state + active_session_id across
+	// re-registrations (SDK reconnect after a blip should resume, not
+	// drop back to idle). Display + metadata fields always refresh.
+	_, err = m.pool.Exec(ctx, `
+		INSERT INTO monitors
+		  (name, display_name, labels, sdk_language, sdk_version, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (name) DO UPDATE SET
+		  display_name = EXCLUDED.display_name,
+		  labels       = EXCLUDED.labels,
+		  sdk_language = EXCLUDED.sdk_language,
+		  sdk_version  = EXCLUDED.sdk_version,
+		  last_seen_at = NOW(),
+		  updated_at   = NOW()
+	`, row.Name, row.DisplayName, labels, row.SDKLanguage, row.SDKVersion)
+	return err
+}
+
+func (m *pgMonitors) TouchLastSeen(ctx context.Context, name string, at time.Time) error {
+	_, err := m.pool.Exec(ctx,
+		`UPDATE monitors SET last_seen_at = $2 WHERE name = $1`,
+		name, at,
+	)
+	return err
+}
+
+func (m *pgMonitors) Get(ctx context.Context, name string) (*MonitorRow, error) {
+	row := m.pool.QueryRow(ctx, `
+		SELECT name, display_name, labels, capture_enabled, active_session_id,
+		       sdk_language, sdk_version, last_seen_at, created_at, updated_at
+		  FROM monitors WHERE name = $1
+	`, name)
+	var r MonitorRow
+	var labelsJSON []byte
+	var activeSessionID *string
+	if err := row.Scan(&r.Name, &r.DisplayName, &labelsJSON, &r.CaptureEnabled,
+		&activeSessionID, &r.SDKLanguage, &r.SDKVersion,
+		&r.LastSeenAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrMonitorNotFound
+		}
+		return nil, err
+	}
+	r.ActiveSessionID = activeSessionID
+	if len(labelsJSON) > 0 {
+		if err := json.Unmarshal(labelsJSON, &r.Labels); err != nil {
+			return nil, fmt.Errorf("unmarshal labels: %w", err)
+		}
+	}
+	return &r, nil
+}
+
+func (m *pgMonitors) List(ctx context.Context) ([]MonitorRow, error) {
+	rows, err := m.pool.Query(ctx, `
+		SELECT name, display_name, labels, capture_enabled, active_session_id,
+		       sdk_language, sdk_version, last_seen_at, created_at, updated_at
+		  FROM monitors ORDER BY last_seen_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []MonitorRow{}
+	for rows.Next() {
+		var r MonitorRow
+		var labelsJSON []byte
+		var activeSessionID *string
+		if err := rows.Scan(&r.Name, &r.DisplayName, &labelsJSON, &r.CaptureEnabled,
+			&activeSessionID, &r.SDKLanguage, &r.SDKVersion,
+			&r.LastSeenAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		r.ActiveSessionID = activeSessionID
+		if len(labelsJSON) > 0 {
+			if err := json.Unmarshal(labelsJSON, &r.Labels); err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (m *pgMonitors) SetCaptureState(ctx context.Context, name string, enabled bool, sessionID *string) error {
+	tag, err := m.pool.Exec(ctx, `
+		UPDATE monitors
+		   SET capture_enabled   = $2,
+		       active_session_id = $3,
+		       updated_at        = NOW()
+		 WHERE name = $1
+	`, name, enabled, sessionID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrMonitorNotFound
+	}
+	return nil
 }

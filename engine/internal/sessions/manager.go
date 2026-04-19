@@ -45,6 +45,16 @@ type Session struct {
 type StartRequest struct {
 	Name   string
 	Labels map[string]string
+	// PreferredID, when non-empty, forces Start to use that ID instead of
+	// minting a new one. Used by ControlService: the dashboard pre-creates
+	// a session row, pushes the ID down to the SDK, and the SDK's
+	// StartSession RPC arrives here with PreferredID = that ID so the
+	// engine attaches rather than creating a second session.
+	//
+	// If a session with this ID already exists, Start returns that session
+	// unchanged (idempotent attach). If it doesn't exist, Start creates a
+	// new session with the caller-supplied ID.
+	PreferredID string
 }
 
 // Manager stores sessions in memory keyed by ID and (optionally) mirrors
@@ -70,10 +80,60 @@ func NewInMemoryManager() *Manager {
 	return NewManager(metadata.Noop{}.Sessions())
 }
 
-// Start opens a new active session, persists it, and returns it.
+// Start opens a new active session, persists it, and returns it. When
+// req.PreferredID matches a session that already exists in memory (the
+// ControlService pre-create path), Start is idempotent — it returns
+// that existing session without creating a second one. When it matches
+// a row in the metadata store but not the in-memory map (e.g. engine
+// restarted and the SDK is re-attaching), Start hydrates the row into
+// the in-memory map and returns it.
 func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error) {
+	if req.PreferredID != "" {
+		m.mu.RLock()
+		existing, ok := m.sessions[req.PreferredID]
+		m.mu.RUnlock()
+		if ok && existing.Status == StatusActive {
+			return existing, nil
+		}
+		// Not in memory — might be a persisted row waiting for the SDK
+		// to attach. Try to hydrate from the metadata store; ignore
+		// ErrSessionNotFound, propagate anything else.
+		row, err := m.store.Get(ctx, req.PreferredID)
+		if err != nil && !errors.Is(err, metadata.ErrSessionNotFound) {
+			return nil, err
+		}
+		if err == nil && row != nil {
+			hydrated := &Session{
+				ID:        row.ID,
+				Name:      row.Name,
+				Labels:    row.Labels,
+				StartedAt: row.StartedAt,
+				Status:    Status(row.Status),
+			}
+			if row.EventsCaptured > 0 {
+				hydrated.EventsCaptured.Store(row.EventsCaptured)
+			}
+			if row.BytesCaptured > 0 {
+				hydrated.BytesCaptured.Store(row.BytesCaptured)
+			}
+			m.mu.Lock()
+			m.sessions[hydrated.ID] = hydrated
+			m.mu.Unlock()
+			if hydrated.Status == StatusActive {
+				return hydrated, nil
+			}
+			// Row exists but is already stopped — fall through to
+			// create a fresh session with a new ID (not the
+			// PreferredID; stopped sessions can't be un-stopped).
+		}
+	}
+
+	id := req.PreferredID
+	if id == "" {
+		id = newID()
+	}
 	s := &Session{
-		ID:        newID(),
+		ID:        id,
 		Name:      req.Name,
 		Labels:    req.Labels,
 		StartedAt: time.Now().UTC(),

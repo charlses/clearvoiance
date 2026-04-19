@@ -1,0 +1,79 @@
+// ControlService lets the engine remote-control SDK clients without
+// polling. SDKs connect once at boot via Subscribe and keep a
+// server-streaming RPC open; the engine pushes StartCapture /
+// StopCapture commands down as operators toggle captures from the
+// dashboard. When no capture is active the connection is idle — the
+// SDK emits no events. Think "agent waiting for orders" rather than
+// "firehose always on".
+
+syntax = "proto3";
+
+package clearvoiance.v1;
+
+option go_package = "github.com/charlses/clearvoiance/engine/internal/pb/clearvoiance/v1;clearvoiancev1";
+
+service ControlService {
+  // Subscribe registers this SDK client with the engine and streams
+  // commands back. The stream stays open for the lifetime of the SDK
+  // process; the SDK reconnects with backoff on any drop. Multiple
+  // instances sharing a client_name (e.g. Swarm replicas) each get
+  // their own stream and all receive every command in fan-out.
+  rpc Subscribe(SubscribeRequest) returns (stream ControlCommand);
+}
+
+message SubscribeRequest {
+  // Stable identity for this SDK client. The same string across
+  // restarts + horizontal replicas so the dashboard can address one
+  // logical service (e.g. "coldfire-strapi", "api-gateway").
+  string client_name = 1;
+
+  // Human-friendly label shown in the dashboard. Defaults to
+  // client_name if empty.
+  string display_name = 2;
+
+  // Free-form metadata (env=prod, region=eu-central-1, etc.). Merged
+  // with capture-session labels at StartCapture time.
+  map<string, string> labels = 3;
+
+  // SDK identity for debugging / version-gating on the engine side.
+  string sdk_language = 4;  // "node", "python", "go", ...
+  string sdk_version = 5;
+
+  // Container / instance identity so the dashboard can tell replicas
+  // apart within the same client_name. Optional; typically os.hostname().
+  string instance_id = 6;
+}
+
+message ControlCommand {
+  oneof cmd {
+    StartCapture start = 1;
+    StopCapture stop = 2;
+    Ping ping = 3;
+  }
+}
+
+// StartCapture tells the SDK to open a CaptureService session and
+// begin streaming events. The session is pre-created by the engine
+// when the dashboard fires the command — the SDK just attaches.
+message StartCapture {
+  string session_id = 1;
+  string session_name = 2;
+  map<string, string> session_labels = 3;
+}
+
+// StopCapture asks the SDK to close its capture session after
+// flushing any in-flight events. flush_timeout_ms is advisory; SDKs
+// should bound the flush to keep shutdown predictable.
+message StopCapture {
+  string session_id = 1;
+  int64 flush_timeout_ms = 2;
+}
+
+// Ping is a liveness keepalive. SDKs ack it by updating their
+// last-seen heartbeat on the next poll or by echoing a client-side
+// ack (future work). For now it just keeps the gRPC stream warm
+// against idle timeouts at LBs and lets the engine notice dead
+// connections.
+message Ping {
+  int64 server_ts_ms = 1;
+}

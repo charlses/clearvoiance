@@ -58,6 +58,28 @@ CREATE TABLE IF NOT EXISTS api_keys (
 
 CREATE INDEX IF NOT EXISTS api_keys_revoked_idx ON api_keys (revoked_at);
 
+-- Remote-controlled capture clients (the "agents waiting for orders"
+-- model — see proto/clearvoiance/v1/control.proto). Each row is one
+-- logical SDK client (e.g. "coldfire-strapi"); horizontal replicas
+-- collapse into the same row but all their live gRPC streams are
+-- tracked in memory by the engine process.
+CREATE TABLE IF NOT EXISTS monitors (
+    name              TEXT PRIMARY KEY,
+    display_name      TEXT NOT NULL DEFAULT '',
+    labels            JSONB NOT NULL DEFAULT '{}'::jsonb,
+    capture_enabled   BOOLEAN NOT NULL DEFAULT FALSE,
+    active_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    sdk_language      TEXT NOT NULL DEFAULT '',
+    sdk_version       TEXT NOT NULL DEFAULT '',
+    last_seen_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS monitors_last_seen_idx ON monitors (last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS monitors_capturing_idx ON monitors (capture_enabled)
+    WHERE capture_enabled = TRUE;
+
 -- Dashboard users. Passwords are argon2id-hashed (PHC string format). v1 is
 -- single-admin: the first visit to /setup creates the sole user, after which
 -- /setup refuses until the row is deleted. Email is case-insensitive, stored

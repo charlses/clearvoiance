@@ -205,6 +205,45 @@ type UserSessions interface {
 	DeleteExpired(ctx context.Context) (int64, error)
 }
 
+// MonitorRow is the persisted shape of one remote-controlled SDK
+// client ("monitor"). See proto/clearvoiance/v1/control.proto for the
+// control plane that drives this table.
+type MonitorRow struct {
+	Name            string
+	DisplayName     string
+	Labels          map[string]string
+	CaptureEnabled  bool
+	ActiveSessionID *string
+	SDKLanguage     string
+	SDKVersion      string
+	LastSeenAt      time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// ErrMonitorNotFound is returned for unknown monitor names.
+var ErrMonitorNotFound = errors.New("monitor not found")
+
+// Monitors is the durable side of the control plane. The in-memory
+// stream registry lives in engine/internal/api/grpc/controlgrpc;
+// this surface is just the "who's registered + what's their capture
+// state" projection that outlives engine restarts.
+type Monitors interface {
+	// Upsert registers or re-registers a monitor on SDK Subscribe.
+	// Preserves existing CaptureEnabled + ActiveSessionID so a mid-
+	// capture reconnect resumes cleanly.
+	Upsert(ctx context.Context, row MonitorRow) error
+	// TouchLastSeen bumps the heartbeat on Ping / event flow.
+	TouchLastSeen(ctx context.Context, name string, at time.Time) error
+	// Get returns a single monitor, or ErrMonitorNotFound.
+	Get(ctx context.Context, name string) (*MonitorRow, error)
+	// List returns all known monitors, newest-last-seen first.
+	List(ctx context.Context) ([]MonitorRow, error)
+	// SetCaptureState atomically flips capture_enabled + active_session_id
+	// when the dashboard starts / stops a capture.
+	SetCaptureState(ctx context.Context, name string, enabled bool, sessionID *string) error
+}
+
 // Store is the umbrella for every relational surface the engine needs.
 type Store interface {
 	Sessions() Sessions
@@ -212,6 +251,7 @@ type Store interface {
 	APIKeys() APIKeys
 	Users() Users
 	UserSessions() UserSessions
+	Monitors() Monitors
 	Close() error
 }
 
@@ -239,6 +279,12 @@ func (Noop) Users() Users { return noopUsers{} }
 // misses, so session-cookie auth is always 401 under Noop. Real deploys
 // must configure Postgres.
 func (Noop) UserSessions() UserSessions { return noopUserSessions{} }
+
+// Monitors returns a noop Monitors implementation — remote-control
+// features degrade to "no persistent registry" without Postgres; SDKs
+// can still connect to the ControlService but restarts forget who was
+// registered.
+func (Noop) Monitors() Monitors { return noopMonitors{} }
 
 // Close is a no-op.
 func (Noop) Close() error { return nil }
@@ -305,3 +351,17 @@ func (noopUserSessions) Lookup(_ context.Context, _ string) (*UserSessionRow, er
 func (noopUserSessions) Revoke(_ context.Context, _ string) error         { return nil }
 func (noopUserSessions) RevokeAllForUser(_ context.Context, _ string) error { return nil }
 func (noopUserSessions) DeleteExpired(_ context.Context) (int64, error)   { return 0, nil }
+
+type noopMonitors struct{}
+
+func (noopMonitors) Upsert(_ context.Context, _ MonitorRow) error { return nil }
+func (noopMonitors) TouchLastSeen(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+func (noopMonitors) Get(_ context.Context, _ string) (*MonitorRow, error) {
+	return nil, ErrMonitorNotFound
+}
+func (noopMonitors) List(_ context.Context) ([]MonitorRow, error) { return nil, nil }
+func (noopMonitors) SetCaptureState(_ context.Context, _ string, _ bool, _ *string) error {
+	return nil
+}
