@@ -44,8 +44,19 @@ export default function ReplayDetailPage({
   const events = useQuery({
     queryKey: ["replay-events", id],
     queryFn: () => api.replayEvents(id, 50),
-    // Refresh on transition out of running.
-    enabled: replay.data?.status !== "pending",
+    // Poll while the replay is firing so rows stream in as the engine
+    // writes them to ClickHouse; once it finishes, do one trailing
+    // refetch (clickhouse flush lag) and then stop.
+    refetchInterval: (q) => {
+      const status = replay.data?.status;
+      if (status === "running" || status === "pending") return 2_000;
+      // Trailing refetch: if we haven't seen any rows yet but the replay
+      // is done, poll a few more times while ClickHouse catches up.
+      const seen = q.state.data?.count ?? 0;
+      const dispatched = replay.data?.events_dispatched ?? 0;
+      if (status === "completed" && seen < dispatched) return 2_000;
+      return false;
+    },
   });
 
   // Live progress via the hub. Only subscribe to `replay.<id>.progress`

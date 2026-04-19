@@ -22,6 +22,27 @@
 #   - .env has TRAEFIK_* + CLEARVOIANCE_API_URL set (see deploy/.env.example).
 
 services:
+  minio:
+    networks:
+      - default
+      - traefik_proxy
+    environment:
+      # Tells MinIO to render presigned URLs with the public hostname so
+      # SDK clients (on other networks) can fetch blobs. Without this,
+      # presigned URLs carry `http://minio:9000` which only resolves
+      # inside the compose network.
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dev}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devdevdev}
+      MINIO_SERVER_URL: https://${TRAEFIK_MINIO_HOST}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik_proxy}"
+      - "traefik.http.routers.clearvoiance-minio.rule=Host(`${TRAEFIK_MINIO_HOST}`)"
+      - "traefik.http.routers.clearvoiance-minio.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.clearvoiance-minio.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.clearvoiance-minio.service=clearvoiance-minio"
+      - "traefik.http.services.clearvoiance-minio.loadbalancer.server.port=9000"
+
   engine:
     networks:
       - default

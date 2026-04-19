@@ -6,3 +6,8 @@
 
 export { Client, createClient, SDK_VERSION } from "./client.js";
 export type { ClientConfig, SessionHandle, StopResult } from "./client.js";
+export {
+  DEFAULT_HEADER_DENY,
+  RECOMMENDED_HEADER_DENY_PRODUCTION,
+} from "./core/redaction.js";
+export type { HeaderMatcher } from "./core/redaction.js";

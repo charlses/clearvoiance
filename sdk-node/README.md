@@ -275,22 +275,37 @@ adapter's own options interface — see the TSDoc on `captureHttp`,
 
 ### Redaction
 
-All HTTP adapters apply a default header denylist
-(`authorization`, `cookie`, `set-cookie`, `proxy-authorization`,
-`x-api-key`, `x-auth-token`, `x-secret-*`). Values get replaced with
-`[REDACTED]` and the redaction is recorded on the event for audit.
+Since 0.1.5, the default is **no redaction** — captures are full-fidelity
+so replay Just Works against the same SUT without auth-strategy
+acrobatics. Authorization headers, session cookies, and API keys flow
+through as captured and land in ClickHouse.
 
-Override per-adapter:
+If you're capturing against a production-adjacent environment and need
+to keep credentials out of storage, opt into the recommended set per
+adapter:
 
 ```ts
+import { RECOMMENDED_HEADER_DENY_PRODUCTION } from "@clearvoiance/node";
+
 app.use(
   captureHttp(client, {
-    redactHeaders: ["authorization", "cookie", /^x-internal-/i],
+    redactHeaders: RECOMMENDED_HEADER_DENY_PRODUCTION,
+    // Or customise:
+    //   redactHeaders: ["authorization", "cookie", /^x-internal-/i],
     userExtractor: (req) => req.user?.id,
     maxBodyInlineBytes: 64 * 1024, // default
   }),
 );
 ```
+
+`RECOMMENDED_HEADER_DENY_PRODUCTION` covers `authorization`, `cookie`,
+`set-cookie`, `proxy-authorization`, `x-api-key`, `x-auth-token`, and
+`x-secret-*`. Redacted values get replaced with `[REDACTED]` and the
+redaction is recorded on the event for audit.
+
+For captures that need redaction AND faithful replay, pair opt-in
+redaction with the engine's replay-time auth strategies
+(`static_swap`, `jwt_resign`).
 
 ### Event context
 

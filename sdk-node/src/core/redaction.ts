@@ -9,12 +9,38 @@
 export type HeaderMatcher = string | RegExp;
 
 /**
- * Default denylist applied to every captured HTTP request/response unless the
- * operator explicitly overrides it. Covers the common auth-carrying headers.
- * All comparisons are case-insensitive — HTTP headers are case-insensitive
- * per RFC 7230 §3.2.
+ * Default denylist: empty. The SDK captures full-fidelity headers
+ * (including Authorization, Cookie, Set-Cookie, etc.) so captured
+ * traffic can be replayed faithfully against the same SUT without
+ * auth-strategy acrobatics.
+ *
+ * If you capture against a production environment and want to keep
+ * credentials out of ClickHouse, opt into redaction at the adapter
+ * level — e.g. with the Koa/Express/Fastify adapters:
+ *
+ *   captureKoa(client, {
+ *     redactHeaders: [
+ *       "authorization", "cookie", "set-cookie",
+ *       "proxy-authorization", "x-api-key", "x-auth-token",
+ *       /^x-secret-/i,
+ *     ],
+ *   })
+ *
+ * For dev/staging captures, the default is what you want: everything
+ * gets captured, replay Just Works because the JWT/session cookie
+ * flows through as-is.
  */
-export const DEFAULT_HEADER_DENY: HeaderMatcher[] = [
+export const DEFAULT_HEADER_DENY: HeaderMatcher[] = [];
+
+/**
+ * Recommended redaction set for production captures. Exported so
+ * operators can opt into "the sensible defaults" without typing out
+ * every header name. Apply per-adapter:
+ *
+ *   import { RECOMMENDED_HEADER_DENY_PRODUCTION } from "@clearvoiance/node";
+ *   captureKoa(client, { redactHeaders: RECOMMENDED_HEADER_DENY_PRODUCTION })
+ */
+export const RECOMMENDED_HEADER_DENY_PRODUCTION: HeaderMatcher[] = [
   "authorization",
   "cookie",
   "set-cookie",

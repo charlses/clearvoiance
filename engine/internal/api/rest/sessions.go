@@ -63,7 +63,9 @@ func (h *sessionHandler) list(w http.ResponseWriter, r *http.Request) {
 		if statusFilter != "" && s.Status != statusFilter {
 			continue
 		}
-		out = append(out, toSessionView(s))
+		v := toSessionView(s)
+		h.overlayLive(r, &v)
+		out = append(out, v)
 		if len(out) >= limit {
 			break
 		}
@@ -88,7 +90,25 @@ func (h *sessionHandler) get(w http.ResponseWriter, r *http.Request) {
 			"get session: "+err.Error(), nil)
 		return
 	}
-	WriteJSON(w, http.StatusOK, toSessionView(*row))
+	v := toSessionView(*row)
+	h.overlayLive(r, &v)
+	WriteJSON(w, http.StatusOK, v)
+}
+
+// overlayLive swaps in the in-memory live counters when the session is
+// still active. The Postgres row only gets events_captured/bytes_captured
+// updated on stop, so a live session reads zero from the row — this
+// method bridges the gap.
+func (h *sessionHandler) overlayLive(r *http.Request, v *sessionView) {
+	if v.Status != "active" || h.mgr == nil {
+		return
+	}
+	live, err := h.mgr.Get(r.Context(), v.ID)
+	if err != nil || live == nil {
+		return
+	}
+	v.EventsCaptured = live.EventsCaptured.Load()
+	v.BytesCaptured = live.BytesCaptured.Load()
 }
 
 func (h *sessionHandler) stop(w http.ResponseWriter, r *http.Request) {
@@ -130,11 +150,18 @@ func (h *sessionHandler) stats(w http.ResponseWriter, r *http.Request) {
 			"get session: "+err.Error(), nil)
 		return
 	}
+	events, bytes := row.EventsCaptured, row.BytesCaptured
+	if row.Status == "active" && h.mgr != nil {
+		if live, err := h.mgr.Get(r.Context(), id); err == nil && live != nil {
+			events = live.EventsCaptured.Load()
+			bytes = live.BytesCaptured.Load()
+		}
+	}
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"id":              row.ID,
 		"status":          row.Status,
-		"events_captured": row.EventsCaptured,
-		"bytes_captured":  row.BytesCaptured,
+		"events_captured": events,
+		"bytes_captured":  bytes,
 		"started_at":      row.StartedAt.Format("2006-01-02T15:04:05.999Z07:00"),
 	})
 }
@@ -194,6 +221,7 @@ type eventView struct {
 	ID          string            `json:"id"`
 	TimestampNs int64             `json:"timestamp_ns"`
 	OffsetNs    int64             `json:"offset_ns"`
+	DurationNs  int64             `json:"duration_ns,omitempty"`
 	Adapter     string            `json:"adapter"`
 	EventType   string            `json:"event_type"`
 	HTTPMethod  string            `json:"http_method,omitempty"`
@@ -219,18 +247,23 @@ func toEventViews(events []*pb.Event) []eventView {
 			view.HTTPMethod = p.Http.GetMethod()
 			view.HTTPPath = p.Http.GetPath()
 			view.HTTPStatus = p.Http.GetStatus()
+			view.DurationNs = p.Http.GetDurationNs()
 		case *pb.Event_Socket:
 			view.EventType = "socket"
+			view.DurationNs = p.Socket.GetDurationNs()
 		case *pb.Event_Cron:
 			view.EventType = "cron"
+			view.DurationNs = p.Cron.GetDurationNs()
 		case *pb.Event_Webhook:
 			view.EventType = "webhook"
 		case *pb.Event_Queue:
 			view.EventType = "queue"
+			view.DurationNs = p.Queue.GetDurationNs()
 		case *pb.Event_Outbound:
 			view.EventType = "outbound"
 		case *pb.Event_Db:
 			view.EventType = "db"
+			view.DurationNs = p.Db.GetDurationNs()
 		}
 		if raw, err := proto.Marshal(ev); err == nil {
 			view.RawPB = base64.StdEncoding.EncodeToString(raw)

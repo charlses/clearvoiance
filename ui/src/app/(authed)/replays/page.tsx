@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
+import { PlusCircle } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/page-header";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Table, TD, TH, THead, TRow } from "@/components/ui/table";
@@ -23,6 +25,13 @@ export default function ReplaysPage() {
         description={
           data ? `${data.count} replay${data.count === 1 ? "" : "s"}` : undefined
         }
+        actions={
+          <Link href="/replays/new">
+            <Button size="sm">
+              <PlusCircle className="mr-1 h-4 w-4" /> New replay
+            </Button>
+          </Link>
+        }
       />
       <div className="p-6">
         {isLoading ? (
@@ -31,8 +40,11 @@ export default function ReplaysPage() {
           <p className="text-sm text-danger">Could not load replays.</p>
         ) : !data || data.count === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No replays yet. Kick one off with <code>clearvoiance replay start</code> or via
-            POST <code>/api/v1/replays</code>.
+            No replays yet.{" "}
+            <Link href="/replays/new" className="text-accent hover:underline">
+              Start one
+            </Link>{" "}
+            from a stopped session.
           </p>
         ) : (
           <Table>

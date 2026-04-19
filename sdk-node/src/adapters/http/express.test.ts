@@ -72,8 +72,8 @@ describe("captureHttp (Express adapter)", () => {
     expect(http.status).toBe(200);
     expect(http.durationNs).toBeGreaterThan(0n);
     expect(http.headers["x-trace-id"]?.values).toEqual(["t-1"]);
-    expect(http.headers["authorization"]?.values).toEqual(["[REDACTED]"]);
-    expect(ev.redactionsApplied).toContain("header:authorization");
+    expect(http.headers["authorization"]?.values).toEqual(["Bearer secret"]);
+    expect(ev.redactionsApplied).not.toContain("header:authorization");
   });
 
   it("captures request + response bodies up to the inline cap", async () => {

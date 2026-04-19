@@ -67,8 +67,8 @@ describe("registerCapture (Fastify adapter)", () => {
     expect(http.routeTemplate).toBe("/users/:id");
     expect(http.durationNs).toBeGreaterThan(0n);
     expect(http.headers["x-trace-id"]?.values).toEqual(["t-1"]);
-    expect(http.headers["authorization"]?.values).toEqual(["[REDACTED]"]);
-    expect(events[0]!.redactionsApplied).toContain("header:authorization");
+    expect(http.headers["authorization"]?.values).toEqual(["Bearer secret"]);
+    expect(events[0]!.redactionsApplied).not.toContain("header:authorization");
   });
 
   it("captures request and response body bytes", async () => {

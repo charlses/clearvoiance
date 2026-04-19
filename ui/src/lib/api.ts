@@ -249,6 +249,7 @@ export interface EventView {
   id: string;
   timestamp_ns: number;
   offset_ns: number;
+  duration_ns?: number;
   adapter: string;
   event_type: string;
   http_method?: string;

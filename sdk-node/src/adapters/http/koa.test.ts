@@ -83,8 +83,8 @@ describe("captureKoa (Koa adapter)", () => {
     expect(http.status).toBe(200);
     expect(http.durationNs).toBeGreaterThan(0n);
     expect(http.headers["x-trace-id"]?.values).toEqual(["t-1"]);
-    expect(http.headers["authorization"]?.values).toEqual(["[REDACTED]"]);
-    expect(events[0]!.redactionsApplied).toContain("header:authorization");
+    expect(http.headers["authorization"]?.values).toEqual(["Bearer secret"]);
+    expect(events[0]!.redactionsApplied).not.toContain("header:authorization");
   });
 
   it("captures the response body bytes Koa wrote to the wire", async () => {
