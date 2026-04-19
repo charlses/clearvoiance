@@ -7,7 +7,7 @@ import { Database, ExternalLink, PlayCircle, History } from "lucide-react";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/page-header";
 import { StatusPill } from "@/components/ui/status-pill";
-import { api, apiBaseURL } from "@/lib/api";
+import { api, apiBaseURL, docsURL } from "@/lib/api";
 import { relativeTime } from "@/lib/utils";
 
 export default function DashboardPage() {
@@ -34,12 +34,12 @@ export default function DashboardPage() {
         description={`Engine @ ${apiBaseURL()}`}
         actions={
           <a
-            href="/docs"
+            href={docsURL("/docs")}
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
-            API docs <ExternalLink className="h-3 w-3" />
+            Docs <ExternalLink className="h-3 w-3" />
           </a>
         }
       />

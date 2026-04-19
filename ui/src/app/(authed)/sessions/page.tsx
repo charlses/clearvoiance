@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Table, TD, TH, THead, TRow } from "@/components/ui/table";
-import { api } from "@/lib/api";
+import { api, docsURL } from "@/lib/api";
 import { fmtBytes, relativeTime } from "@/lib/utils";
 
 export default function SessionsPage() {
@@ -32,9 +32,14 @@ export default function SessionsPage() {
         ) : !data || data.count === 0 ? (
           <p className="text-sm text-muted-foreground">
             No sessions yet. Start one with the SDK — see{" "}
-            <Link href="/docs" className="text-accent hover:underline">
-              API docs
-            </Link>
+            <a
+              href={docsURL("/docs/quickstart")}
+              target="_blank"
+              rel="noreferrer"
+              className="text-accent hover:underline"
+            >
+              the quickstart
+            </a>
             .
           </p>
         ) : (

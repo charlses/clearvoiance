@@ -146,9 +146,10 @@ services:
       context: ../
       dockerfile: deploy/images/ui/Dockerfile
       args:
-        # NEXT_PUBLIC_* bakes in at build — change CLEARVOIANCE_API_URL in
-        # .env + rerun `docker compose build ui` to switch engine URLs.
+        # NEXT_PUBLIC_* bakes in at build — change these in .env + rerun
+        # `docker compose build ui` to pick up new URLs.
         NEXT_PUBLIC_CLEARVOIANCE_API: ${CLEARVOIANCE_API_URL:-http://localhost:9101}
+        NEXT_PUBLIC_CLEARVOIANCE_DOCS: ${CLEARVOIANCE_DOCS_URL:-https://clearvoiance.vercel.app}
     restart: unless-stopped
     depends_on:
       engine:

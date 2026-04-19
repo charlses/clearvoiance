@@ -67,6 +67,17 @@ export function wsBaseURL(): string {
   return base.replace(/^http/, "ws");
 }
 
+// External marketing + docs site. Baked in at build time via
+// NEXT_PUBLIC_CLEARVOIANCE_DOCS; defaults to the public vercel deploy so
+// self-hosters get working links out of the box.
+export function docsURL(path = ""): string {
+  const base = (
+    process.env.NEXT_PUBLIC_CLEARVOIANCE_DOCS ||
+    "https://clearvoiance.vercel.app"
+  ).replace(/\/$/, "");
+  return path ? `${base}${path.startsWith("/") ? path : "/" + path}` : base;
+}
+
 export function storedAPIKey(): string | null {
   if (typeof window === "undefined") return null;
   return window.localStorage.getItem(API_KEY_STORAGE);

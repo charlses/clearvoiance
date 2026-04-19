@@ -27,6 +27,8 @@ COPY ui/ ./ui/
 # compose's build.args (see deploy/docker-compose.yml).
 ARG NEXT_PUBLIC_CLEARVOIANCE_API=http://localhost:9101
 ENV NEXT_PUBLIC_CLEARVOIANCE_API=${NEXT_PUBLIC_CLEARVOIANCE_API}
+ARG NEXT_PUBLIC_CLEARVOIANCE_DOCS=https://clearvoiance.vercel.app
+ENV NEXT_PUBLIC_CLEARVOIANCE_DOCS=${NEXT_PUBLIC_CLEARVOIANCE_DOCS}
 
 RUN pnpm --filter @clearvoiance/ui build
 
