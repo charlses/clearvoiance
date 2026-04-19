@@ -14,12 +14,20 @@ import { createHash } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { credentials, type ClientDuplexStream } from "@grpc/grpc-js";
+import {
+  credentials,
+  type ClientDuplexStream,
+  type ClientReadableStream,
+} from "@grpc/grpc-js";
 import {
   CaptureServiceClient,
   type StreamEventsRequest,
   type StreamEventsResponse,
 } from "./generated/clearvoiance/v1/capture.js";
+import {
+  ControlServiceClient,
+  type ControlCommand,
+} from "./generated/clearvoiance/v1/control.js";
 import type { BlobRef, Event } from "./generated/clearvoiance/v1/event.js";
 import { WAL } from "./client/wal.js";
 import { SDK_VERSION } from "./version.js";
@@ -32,9 +40,34 @@ export interface ClientConfig {
     apiKey: string;
     tls?: boolean; // default false — loopback dev default
   };
+  /**
+   * Session block used only when `remote` is not set. Describes the
+   * single long-lived capture session the SDK creates on start().
+   */
   session: {
     name: string;
     labels?: Record<string, string>;
+  };
+  /**
+   * Remote-control mode. When set, start() does NOT open a capture
+   * session — it subscribes to the engine's ControlService and waits
+   * idle until the dashboard pushes a StartCapture command. Each
+   * start/stop cycle initiated from the dashboard creates a distinct
+   * capture session; the SDK attaches to the engine-pre-created
+   * session id and flushes cleanly on StopCapture.
+   *
+   * In remote mode:
+   *   - sendBatch() is a no-op when no capture is active (drops silently)
+   *   - adapters keep their usual API — they don't need to know about
+   *     the start/stop cycles
+   *   - the control stream auto-reconnects with backoff on drops
+   */
+  remote?: {
+    clientName: string;            // stable identity, e.g. "coldfire-strapi"
+    displayName?: string;          // human label for the dashboard
+    labels?: Record<string, string>;
+    sdkLanguage?: string;          // default "node"
+    instanceId?: string;           // default os.hostname()
   };
   wal?: {
     /** Root dir for WAL files. Default: ${os.tmpdir()}/clearvoiance-wal */
@@ -68,6 +101,7 @@ export interface StopResult {
 export class Client {
   private readonly config: ClientConfig;
   private readonly grpc: CaptureServiceClient;
+  private readonly controlGrpc: ControlServiceClient;
   private session: SessionHandle | null = null;
   private stream: ClientDuplexStream<StreamEventsRequest, StreamEventsResponse> | null = null;
   private streamHealthy = false;
@@ -81,24 +115,67 @@ export class Client {
   private draining = false;
   private shuttingDown = false;
 
+  // Remote-control (option-3 architecture): control stream lives
+  // for the whole client lifetime, independently of the capture
+  // session which cycles with Start/Stop commands.
+  private controlStream: ClientReadableStream<ControlCommand> | null = null;
+  private controlReconnectTimer: NodeJS.Timeout | null = null;
+  private controlReconnectAttempt = 0;
+  /** Set true once we've warned about sendBatch being dropped; we only
+   *  log this once per remote-waiting period to avoid flooding. */
+  private loggedDropWhileIdle = false;
+
   constructor(config: ClientConfig) {
     this.config = config;
     const creds = config.engine.tls ? credentials.createSsl() : credentials.createInsecure();
     this.grpc = new CaptureServiceClient(config.engine.url, creds);
+    this.controlGrpc = new ControlServiceClient(config.engine.url, creds);
   }
 
-  /** Opens a session with the engine and performs the StreamEvents handshake. */
-  async start(): Promise<SessionHandle> {
+  /**
+   * Starts the client.
+   *
+   *  - In default mode: opens a capture session immediately and returns
+   *    the session handle.
+   *  - In remote mode (`config.remote`): opens a ControlService.Subscribe
+   *    stream and waits for the dashboard to push StartCapture. Returns
+   *    null — no session is active yet.
+   *
+   * Adapters shouldn't branch on the return value; they keep calling
+   * sendBatch() and the client handles the rest internally.
+   */
+  async start(): Promise<SessionHandle | null> {
+    if (this.config.remote) {
+      this.openControlStream();
+      return null;
+    }
     if (this.session) return this.session;
+    return this.openSession({
+      name: this.config.session.name,
+      labels: this.config.session.labels,
+    });
+  }
 
+  /**
+   * Opens a capture session + StreamEvents stream against the engine.
+   * Called directly by non-remote start(), and indirectly by the
+   * remote control-command handler when StartCapture arrives with a
+   * preferred session id.
+   */
+  private async openSession(params: {
+    name: string;
+    labels?: Record<string, string>;
+    preferredId?: string;
+  }): Promise<SessionHandle> {
     const startResp = await new Promise<{ sessionId: string; startedAtNs: bigint }>(
       (resolve, reject) => {
         this.grpc.startSession(
           {
-            name: this.config.session.name,
+            name: params.name,
             apiKey: this.config.engine.apiKey,
-            labels: this.config.session.labels ?? {},
+            labels: params.labels ?? {},
             config: undefined,
+            preferredSessionId: params.preferredId ?? "",
           },
           (err, resp) => {
             if (err) return reject(err);
@@ -125,8 +202,8 @@ export class Client {
       maxEventsPerSecond: ack.maxEventsPerSecond,
       recommendedFlushIntervalMs: ack.recommendedFlushIntervalMs,
     };
-
     this.streamHealthy = true;
+    this.loggedDropWhileIdle = false;
     return this.session;
   }
 
@@ -137,6 +214,19 @@ export class Client {
    */
   async sendBatch(events: Event[]): Promise<void> {
     if (!this.session) {
+      // Remote mode waiting for the dashboard to click Start — drop
+      // events silently. Log once per idle stretch so it's obvious
+      // from the logs that capture is inactive without flooding.
+      if (this.config.remote) {
+        if (!this.loggedDropWhileIdle) {
+          this.loggedDropWhileIdle = true;
+          // eslint-disable-next-line no-console
+          console.info(
+            "[clearvoiance] capture idle — events are dropped until the dashboard starts a session",
+          );
+        }
+        return;
+      }
       throw new Error("client not started — call start() before sendBatch()");
     }
     const batchId = this.nextBatchId++;
@@ -211,16 +301,52 @@ export class Client {
     return { bucket: presign.bucket, key: presign.key, sha256 };
   }
 
-  /** Stops the session and returns final counters. */
+  /**
+   * Stops the client. In default mode: closes the active session and
+   * returns its final counters. In remote mode: closes the control
+   * stream + any active capture session, tears down the gRPC clients.
+   *
+   * Always safe to call multiple times; returns a zero StopResult when
+   * there's nothing active.
+   */
   async stop(opts: { flushTimeoutMs?: number } = {}): Promise<StopResult> {
+    this.shuttingDown = true;
+    this.clearReconnect();
+    this.clearControlReconnect();
+
+    // Close control stream first so the server stops pushing commands
+    // into a client that's on its way out.
+    this.closeControlStream();
+
+    let result: StopResult = {
+      stoppedAtNs: 0n,
+      eventsCaptured: 0n,
+      bytesCaptured: 0n,
+    };
+    if (this.session) {
+      result = await this.closeSession(opts);
+    }
+
+    this.grpc.close();
+    this.controlGrpc.close();
+    return result;
+  }
+
+  /**
+   * Closes the currently-open capture session without touching the
+   * control stream. Called by:
+   *  - stop() (non-remote shutdown)
+   *  - the StopCapture control-command handler (remote, capture cycles)
+   *  - the StartCapture handler if a previous session is still open
+   *    (defensive; the engine wouldn't normally send Start without a
+   *    prior Stop, but we don't want to leak a stream).
+   */
+  private async closeSession(opts: { flushTimeoutMs?: number } = {}): Promise<StopResult> {
     if (!this.session) {
-      throw new Error("client not started");
+      return { stoppedAtNs: 0n, eventsCaptured: 0n, bytesCaptured: 0n };
     }
     const sessionId = this.session.id;
     const flushTimeoutMs = opts.flushTimeoutMs ?? 2000;
-
-    this.shuttingDown = true;
-    this.clearReconnect();
 
     // Drain in-flight sends before closing.
     if (this.inflight.size > 0) {
@@ -236,22 +362,38 @@ export class Client {
     }
     this.streamHealthy = false;
 
-    const result = await new Promise<StopResult>((resolve, reject) => {
-      this.grpc.stopSession(
-        { sessionId, apiKey: this.config.engine.apiKey },
-        (err, resp) => {
-          if (err) return reject(err);
-          resolve({
-            stoppedAtNs: resp.stoppedAtNs,
-            eventsCaptured: resp.eventsCaptured,
-            bytesCaptured: resp.bytesCaptured,
-          });
-        },
-      );
-    });
+    let result: StopResult;
+    try {
+      result = await new Promise<StopResult>((resolve, reject) => {
+        this.grpc.stopSession(
+          { sessionId, apiKey: this.config.engine.apiKey },
+          (err, resp) => {
+            if (err) return reject(err);
+            resolve({
+              stoppedAtNs: resp.stoppedAtNs,
+              eventsCaptured: resp.eventsCaptured,
+              bytesCaptured: resp.bytesCaptured,
+            });
+          },
+        );
+      });
+    } catch (err) {
+      // In remote mode the engine may have already stopped the session
+      // in response to its own dashboard-side action; tolerate that so
+      // we don't crash on the subsequent ack.
+      if (this.config.remote) {
+        // eslint-disable-next-line no-console
+        console.info(
+          "[clearvoiance] closeSession(): stop call rejected (likely already stopped)",
+          (err as Error)?.message ?? String(err),
+        );
+        result = { stoppedAtNs: 0n, eventsCaptured: 0n, bytesCaptured: 0n };
+      } else {
+        throw err;
+      }
+    }
 
     this.session = null;
-    this.grpc.close();
     return result;
   }
 
@@ -408,6 +550,149 @@ export class Client {
         },
       });
     });
+  }
+
+  // --- remote control -----------------------------------------------------
+  //
+  // openControlStream is non-blocking: it kicks off the Subscribe RPC and
+  // returns. Commands arrive asynchronously on `data` events. Drops +
+  // errors schedule a reconnect with exponential backoff, so the SDK is
+  // resilient to transient engine outages the same way capture streams are.
+
+  private openControlStream(): void {
+    if (this.controlStream || this.shuttingDown) return;
+    const cfg = this.config.remote;
+    if (!cfg) return;
+
+    // node:os is already imported at the top for defaultWalDir.
+    const stream = this.controlGrpc.subscribe({
+      clientName: cfg.clientName,
+      displayName: cfg.displayName ?? cfg.clientName,
+      labels: cfg.labels ?? {},
+      sdkLanguage: cfg.sdkLanguage ?? "node",
+      sdkVersion: SDK_VERSION,
+      instanceId: cfg.instanceId ?? os.hostname(),
+    });
+    this.controlStream = stream;
+    this.controlReconnectAttempt = 0;
+
+    stream.on("data", (cmd: ControlCommand) => {
+      // Fire-and-forget — any command-handler error logs itself, we
+      // don't want to kill the stream on a transient StartCapture hiccup.
+      void this.handleControlCommand(cmd);
+    });
+    stream.on("error", (err: Error) => {
+      if (this.shuttingDown) return;
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[clearvoiance] control stream error, reconnecting:",
+        err?.message ?? String(err),
+      );
+      this.controlStream = null;
+      this.scheduleControlReconnect();
+    });
+    stream.on("end", () => {
+      if (this.shuttingDown) return;
+      this.controlStream = null;
+      this.scheduleControlReconnect();
+    });
+  }
+
+  private async handleControlCommand(cmd: ControlCommand): Promise<void> {
+    if (cmd.start) {
+      const start = cmd.start;
+      // Idempotent: duplicate StartCapture for the session we already
+      // have is a no-op (engine-side reconnect resume can emit this).
+      if (this.session?.id === start.sessionId) return;
+      // Defensive: close any previous session before attaching to a new one.
+      if (this.session) {
+        try {
+          await this.closeSession({ flushTimeoutMs: 5_000 });
+        } catch {
+          // closeSession in remote mode already swallows its own errors.
+        }
+      }
+      try {
+        await this.openSession({
+          name: start.sessionName || this.config.session?.name || start.sessionId,
+          labels: start.sessionLabels ?? {},
+          preferredId: start.sessionId,
+        });
+        // eslint-disable-next-line no-console
+        console.info(
+          "[clearvoiance] capture started from dashboard:",
+          start.sessionId,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          "[clearvoiance] failed to attach session from dashboard:",
+          (err as Error)?.message ?? String(err),
+        );
+      }
+      return;
+    }
+    if (cmd.stop) {
+      const stop = cmd.stop;
+      if (!this.session || this.session.id !== stop.sessionId) return;
+      const flushTimeoutMs = Number(stop.flushTimeoutMs) || 10_000;
+      try {
+        await this.closeSession({ flushTimeoutMs });
+        // eslint-disable-next-line no-console
+        console.info(
+          "[clearvoiance] capture stopped from dashboard:",
+          stop.sessionId,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[clearvoiance] error closing dashboard-stopped session:",
+          (err as Error)?.message ?? String(err),
+        );
+      }
+      return;
+    }
+    if (cmd.ping) {
+      // gRPC keepalive does the real work; this is just observable
+      // proof-of-life for the engine's monitor-row heartbeat.
+      return;
+    }
+  }
+
+  private scheduleControlReconnect(): void {
+    if (this.controlReconnectTimer || this.shuttingDown || !this.config.remote) {
+      return;
+    }
+    const cfg = this.config.reconnect ?? {};
+    const initial = cfg.initialBackoffMs ?? 500;
+    const cap = cfg.maxBackoffMs ?? 30_000;
+    const delay = Math.min(
+      initial * Math.pow(2, this.controlReconnectAttempt),
+      cap,
+    );
+    this.controlReconnectTimer = setTimeout(() => {
+      this.controlReconnectTimer = null;
+      this.controlReconnectAttempt += 1;
+      this.openControlStream();
+    }, delay);
+  }
+
+  private clearControlReconnect(): void {
+    if (this.controlReconnectTimer) {
+      clearTimeout(this.controlReconnectTimer);
+      this.controlReconnectTimer = null;
+    }
+  }
+
+  private closeControlStream(): void {
+    if (this.controlStream) {
+      try {
+        this.controlStream.cancel();
+      } catch {
+        /* already closed */
+      }
+      this.controlStream = null;
+    }
   }
 }
 
