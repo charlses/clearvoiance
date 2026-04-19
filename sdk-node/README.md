@@ -26,6 +26,21 @@ All framework integrations (Express, Koa, Strapi, Fastify, Socket.io,
 node-cron, BullMQ, pg, Prisma) are optional peer dependencies — install
 only the ones you actually use.
 
+## Getting an API key
+
+The SDK authenticates to the engine via a bearer API key. Mint one via
+the dashboard:
+
+1. Open the engine's dashboard (default `http://localhost:3000`).
+2. First visit lands on **Setup** — create an admin account (email +
+   password).
+3. Once signed in, go to **Settings → API keys → Create**.
+4. Copy the plaintext `clv_live_...` string (shown once) into your env
+   as `CLEARVOIANCE_API_KEY`.
+
+Prefer the command line? `clearvoiance api-keys create --name my-key`
+does the same thing.
+
 ## Quick start — Express + outbound capture
 
 ```ts
@@ -37,7 +52,9 @@ import { patchOutbound } from "@clearvoiance/node/outbound";
 const client = createClient({
   engine: {
     url: process.env.CLEARVOIANCE_ENGINE_URL ?? "127.0.0.1:9100",
-    apiKey: process.env.CLEARVOIANCE_API_KEY ?? "dev",
+    // Mint an API key at the engine's dashboard → Settings → API keys.
+    // Copy the plaintext (shown once) into your env.
+    apiKey: process.env.CLEARVOIANCE_API_KEY!,
   },
   session: { name: "my-api" },
   // Optional WAL — events queue to disk if the engine's unreachable,

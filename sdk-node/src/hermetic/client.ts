@@ -14,7 +14,7 @@
  * Env vars:
  *   CLEARVOIANCE_HERMETIC            "true" → activate
  *   CLEARVOIANCE_ENGINE_URL          gRPC target, e.g. 127.0.0.1:9100
- *   CLEARVOIANCE_API_KEY             required (dev-open accepts any value)
+ *   CLEARVOIANCE_API_KEY             bearer key; mint in the dashboard
  *   CLEARVOIANCE_SOURCE_SESSION_ID   session to replay from
  *   CLEARVOIANCE_HERMETIC_POLICY     "strict" (default) | "loose"
  */

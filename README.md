@@ -28,8 +28,8 @@ Phases 0 through 6 are shipped end-to-end, all green in CI (14 jobs: Go unit + G
 - **Replay engine**: time-compressed replay at N× speedup, virtual-user fan-out, JWT-resign / static-swap auth strategies, Starlark body mutators, time-window selection + target-duration auto-speedup.
 - **Hermetic mode**: captured outbounds served from a mock pack, cron killer + invoke server so the SUT's scheduler never fires during replay, strict/loose policies, engine-side unmocked-outbound log.
 - **DB observer**: out-of-process `clearvoiance-observer` polls `pg_stat_activity` and correlates slow queries back to replay events via `application_name = clv:<event_id>` set by the SDK's `instrumentPg`.
-- **Control plane**: REST API at `/api/v1/*` (sessions, replays, api-keys, db-observations, health, metrics, config) + WebSocket hub with live replay progress. OpenAPI 3.1 at `/api/v1/openapi.yaml`, Swagger UI at `/docs`, Postgres-backed audit log with secret-redacted payloads.
-- **UI**: Next.js 16 + React 19 dashboard consuming the REST + WS — sessions, replays with 250ms live progress, DB observations view, API key management.
+- **Control plane**: REST API at `/api/v1/*` (sessions, replays, api-keys, db-observations, health, metrics, config, auth) + WebSocket hub with live replay progress. OpenAPI 3.1 at `/api/v1/openapi.yaml`, Swagger UI at `/docs`, Postgres-backed audit log with secret-redacted payloads. Dual auth: HttpOnly session cookie for humans, Bearer API key for SDKs.
+- **UI**: Next.js 16 + React 19 dashboard consuming the REST + WS — email+password login with a first-visit setup wizard, sessions, replays with 250ms live progress, DB observations view, API key management, self-serve account settings.
 
 Remaining phases per [`plan/`](./plan/README.md): **Phase 7** (more SDK languages / framework adapters) and **Phase 8** (OSS launch + docs site).
 
@@ -54,10 +54,14 @@ Default endpoints:
 | Engine REST + WS    | `http://127.0.0.1:9101`   |
 | Engine gRPC (SDK)   | `127.0.0.1:9100`          |
 
+Open the dashboard, create an admin account in the first-visit setup
+wizard, then mint API keys in **Settings → API keys** to point the SDK
+at the engine. No CLI bootstrap required.
+
 `deploy/docker-compose.yml` ships commented Traefik labels for both the
 engine and dashboard, plus an optional `db-observer` block — see the
 [Deployment docs](https://clearvoiance.io/docs/deployment) for TLS
-setup, DSN wiring, and upgrade flow.
+setup, DSN wiring, session cookie config, and upgrade flow.
 
 ## Architecture at a glance
 
