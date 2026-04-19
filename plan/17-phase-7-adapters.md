@@ -1,7 +1,34 @@
 # Phase 7 — Adapter Ecosystem
 
-**Duration:** 1 week.
+**Status:** Core slice shipped 2026-04-17.
 **Goal:** Grow the adapter surface from "Strapi + Express" to a complete Node.js ecosystem. Pave the path for non-Node SDKs by productionizing the adapter pattern.
+
+## What landed
+
+- **Fastify HTTP adapter** (`@clearvoiance/node/http/fastify`): `registerCapture(app, client)` installs `onRequest` / `preParsing` / `onSend` / `onResponse` hooks. Uses Fastify's `routeOptions.url` for the `route_template` field so per-route aggregation matches Express quality.
+- **BullMQ queue capture** (`@clearvoiance/node/queue/bullmq`): wraps a processor fn so every job consumption emits a `QueueEvent{queue_name, broker:"bullmq", message_id, payload, retry_count, status}`. Seeds the AsyncLocalStorage event context so outbound + DB adapters correlate child ops back to the job. Re-throws failures so BullMQ's retry semantics are preserved.
+- **Prisma DB adapter** (`@clearvoiance/node/db/prisma`): `instrumentPrisma(client, { replayId })` uses `$extends({ query: { $allOperations } })` to fire `SET application_name = 'clv:<event_id>'` before every operation. Works where the pg-Pool `on('connect')` hook doesn't (Prisma runs its own engine process).
+- **Engine queue dispatcher** (`engine/internal/replay/queue.go`): real implementation, previously stubbed. POSTs to the same hermetic invoke endpoint as `CronDispatcher`, keyed on `QueueEvent.Headers[job_name]` so BullMQ-captured jobs replay correctly.
+- **Cron dispatcher encoding fix** (bonus): the existing `encodeArgs` was emitting hex while the SDK's invoke-server decoded base64. Latent bug that would have garbled args on any captured cron replay. Now uses stdlib base64 via a shared `encodeBase64` helper; cron + queue dispatchers go through the same path.
+- **Auto-detect** (`@clearvoiance/node/auto`): `autoInstrument(client, { app })` sniffs Express/Koa/Fastify apps via duck typing, dynamically imports + installs the matching capture adapter, and (unless `skipOutbound`) patches global `http.request` + `fetch`. Returns `{detected, uninstall}` for observability + test teardown.
+
+## Tests
+
+- **Fastify** (4): method/path/status/route template + headers, body capture, userExtractor, onError swallowing.
+- **BullMQ** (4): payload + status=success, failure with re-throw, AsyncLocalStorage context, jobs without an id.
+- **Prisma** (5): SET-before-op ordering, replayId composition, no-op outside event scope, onError swallowing, 63-char app-name truncation.
+- **Auto-detect** (5): real Express/Koa/Fastify detection, outbound patch default, `skipOutbound` flag.
+- **104 total SDK tests** (23 files) green. Engine tests green.
+
+## Explicitly deferred
+
+- **Nest module** (DI + APP_INTERCEPTOR) — users can wrap captureHttp manually in the meantime.
+- **Next.js App Router / Pages Router wrappers** — App Router is covered by `patchFetch`; explicit `withClearvoiance(handler)` helpers land next.
+- **Hono / Edge runtime** — HTTP/1 transport over gRPC is v1-only.
+- **AMQP / Kafka / SQS / pg-boss queue adapters** — BullMQ covers the popular case.
+- **Outbound tagging wrappers** (Stripe / OpenAI / AWS SDK v3) — underlying HTTP catches the calls; explicit wrappers for nicer `target` tags are polish.
+- **Other DB adapters** (TypeORM / Drizzle / Mongoose) — Prisma + node-pg cover the common case.
+- **Non-Node SDKs** (Python / Go / Ruby) — Phase 8+ once OSS launch attracts contributors.
 
 ## Deliverables
 

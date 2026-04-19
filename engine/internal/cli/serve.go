@@ -144,6 +144,7 @@ func runServe(ctx context.Context, log *slog.Logger, version string, opts serveO
 		replay.NewHTTPDispatcher(),
 		replay.NewCronDispatcher(log),
 		replay.NewSocketIODispatcher(log),
+		replay.NewQueueDispatcher(log),
 	)
 	replayGRPC := capturegrpc.NewReplayServer(log, replayEngine, meta.Replays())
 	hermeticGRPC := capturegrpc.NewHermeticServer(log, store, meta.APIKeys())

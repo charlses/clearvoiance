@@ -3,6 +3,7 @@ package replay
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -66,7 +67,7 @@ func (d *CronDispatcher) Dispatch(ctx context.Context, ev *pb.Event, target *Tar
 		"scheduler":      cron.GetScheduler(),
 		"trigger_source": cron.GetTriggerSource(),
 		"vu":             vu,
-		"args_base64":    encodeArgs(argsBytes),
+		"args_base64":    encodeBase64(argsBytes),
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -109,16 +110,15 @@ func (d *CronDispatcher) Dispatch(ctx context.Context, ev *pb.Event, target *Tar
 	}, nil
 }
 
-func encodeArgs(raw []byte) string {
+// encodeBase64 is the SDK-compatible encoder — the invoke-server on the
+// SUT side decodes `args_base64` with base64. A previous version of this
+// helper encoded hex (with a misleading comment claiming stdlib base64
+// "would also work"). That was a latent bug: replayed cron/queue jobs ran
+// with mangled args. Now we use the stdlib base64 directly; the hex branch
+// is gone and the queue dispatcher shares this helper.
+func encodeBase64(raw []byte) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	// Base64 via stdlib would also work; keep dep surface small.
-	const hex = "0123456789abcdef"
-	out := make([]byte, len(raw)*2)
-	for i, b := range raw {
-		out[i*2] = hex[b>>4]
-		out[i*2+1] = hex[b&0xf]
-	}
-	return string(out)
+	return base64.StdEncoding.EncodeToString(raw)
 }

@@ -114,6 +114,46 @@
         "types": "./dist/db/postgres.d.cts",
         "default": "./dist/db/postgres.cjs"
       }
+    },
+    "./db/prisma": {
+      "import": {
+        "types": "./dist/db/prisma.d.mts",
+        "default": "./dist/db/prisma.mjs"
+      },
+      "require": {
+        "types": "./dist/db/prisma.d.cts",
+        "default": "./dist/db/prisma.cjs"
+      }
+    },
+    "./http/fastify": {
+      "import": {
+        "types": "./dist/adapters/http/fastify.d.mts",
+        "default": "./dist/adapters/http/fastify.mjs"
+      },
+      "require": {
+        "types": "./dist/adapters/http/fastify.d.cts",
+        "default": "./dist/adapters/http/fastify.cjs"
+      }
+    },
+    "./queue/bullmq": {
+      "import": {
+        "types": "./dist/adapters/queue/bullmq.d.mts",
+        "default": "./dist/adapters/queue/bullmq.mjs"
+      },
+      "require": {
+        "types": "./dist/adapters/queue/bullmq.d.cts",
+        "default": "./dist/adapters/queue/bullmq.cjs"
+      }
+    },
+    "./auto": {
+      "import": {
+        "types": "./dist/auto.d.mts",
+        "default": "./dist/auto.mjs"
+      },
+      "require": {
+        "types": "./dist/auto.d.cts",
+        "default": "./dist/auto.cjs"
+      }
     }
   },
   "files": [
@@ -135,13 +175,16 @@
     "node": ">=24"
   },
   "devDependencies": {
+    "@prisma/client": "^7.7.0",
     "@testcontainers/postgresql": "^11.14.0",
     "@types/express": "^5.0.6",
     "@types/koa": "^3.0.2",
     "@types/node": "^25.6.0",
     "@types/node-cron": "^3.0.11",
     "@types/pg": "^8.20.0",
+    "bullmq": "^5.74.1",
     "express": "^5.2.1",
+    "fastify": "^5.8.5",
     "koa": "^3.2.0",
     "node-cron": "^4.2.1",
     "pg": "^8.20.0",
@@ -157,14 +200,26 @@
     "@grpc/grpc-js": "^1.14.3"
   },
   "peerDependencies": {
+    "@prisma/client": ">=5.0.0 <8.0.0",
+    "bullmq": ">=5.0.0 <6.0.0",
     "express": ">=4.0.0 <6.0.0",
+    "fastify": ">=5.0.0 <6.0.0",
     "koa": ">=2.0.0 <4.0.0",
     "node-cron": ">=3.0.0 <5.0.0",
     "pg": ">=8.0.0 <9.0.0",
     "socket.io": ">=4.0.0 <5.0.0"
   },
   "peerDependenciesMeta": {
+    "@prisma/client": {
+      "optional": true
+    },
+    "bullmq": {
+      "optional": true
+    },
     "express": {
+      "optional": true
+    },
+    "fastify": {
       "optional": true
     },
     "koa": {
