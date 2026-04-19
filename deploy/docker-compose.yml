@@ -1,12 +1,15 @@
-# Full self-host stack for clearvoiance.
+# Full self-host stack for clearvoiance: engine + dashboard + stores.
 #
 # Usage:
+#   cp deploy/.env.example deploy/.env       # tweak passwords + URLs
 #   docker compose -f deploy/docker-compose.yml up -d
-#   # SDK clients point at grpc://127.0.0.1:9100
+#   # Dashboard at http://localhost:${DASHBOARD_PORT} (default :3000)
+#   # SDK clients point at grpc://localhost:${ENGINE_GRPC_PORT} (default :9100)
 #
-# Bucket `clearvoiance-blobs` is auto-created on first boot via the
-# `minio-bootstrap` one-shot. Everything binds to loopback only — no
-# production exposure without an explicit reverse proxy.
+# Bucket `${MINIO_BUCKET}` is auto-created on first boot via the
+# `minio-bootstrap` one-shot. All services bind to loopback by default.
+# To expose externally, either change the port mappings or uncomment the
+# Traefik block at the bottom + the `traefik.*` labels on engine + ui.
 
 name: clearvoiance
 
@@ -15,14 +18,14 @@ services:
     image: clickhouse/clickhouse-server:24-alpine
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8123:8123"  # HTTP
-      - "127.0.0.1:9000:9000"  # Native
+      - "127.0.0.1:${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "127.0.0.1:${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
     environment:
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: dev
-      CLICKHOUSE_DB: clearvoiance
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-dev}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-clearvoiance}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -38,13 +41,13 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: dev
-      MINIO_ROOT_PASSWORD: devdevdev
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dev}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devdevdev}
     ports:
-      - "127.0.0.1:9002:9000"  # S3 API
-      - "127.0.0.1:9001:9001"  # Console
+      - "127.0.0.1:${MINIO_API_PORT:-9002}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -56,10 +59,14 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dev}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devdevdev}
+      MINIO_BUCKET: ${MINIO_BUCKET:-clearvoiance-blobs}
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 dev devdevdev &&
-      mc mb -p local/clearvoiance-blobs || true
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      mc mb -p local/$${MINIO_BUCKET} || true
       "
     restart: "no"
 
@@ -67,13 +74,13 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: clearvoiance
-      POSTGRES_PASSWORD: dev
-      POSTGRES_DB: clearvoiance
+      POSTGRES_USER: ${POSTGRES_USER:-clearvoiance}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev}
+      POSTGRES_DB: ${POSTGRES_DB:-clearvoiance}
     ports:
-      - "127.0.0.1:5499:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5499}:5432"
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "clearvoiance", "-d", "clearvoiance"]
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-clearvoiance}", "-d", "${POSTGRES_DB:-clearvoiance}"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -84,6 +91,8 @@ services:
     build:
       context: ../
       dockerfile: deploy/images/engine/Dockerfile
+      args:
+        VERSION: ${CLEARVOIANCE_VERSION:-0.0.0-dev}
     restart: unless-stopped
     depends_on:
       clickhouse:
@@ -94,20 +103,89 @@ services:
         condition: service_healthy
       minio-bootstrap:
         condition: service_completed_successfully
+    environment:
+      CLEARVOIANCE_CLICKHOUSE_DSN: clickhouse://${CLICKHOUSE_USER:-default}:${CLICKHOUSE_PASSWORD:-dev}@clickhouse:9000/${CLICKHOUSE_DB:-clearvoiance}
+      CLEARVOIANCE_POSTGRES_DSN: postgres://${POSTGRES_USER:-clearvoiance}:${POSTGRES_PASSWORD:-dev}@postgres:5432/${POSTGRES_DB:-clearvoiance}?sslmode=disable
+      CLEARVOIANCE_MINIO_ENDPOINT: http://minio:9000
+      CLEARVOIANCE_MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      CLEARVOIANCE_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-dev}
+      CLEARVOIANCE_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-devdevdev}
+      CLEARVOIANCE_MINIO_BUCKET: ${MINIO_BUCKET:-clearvoiance-blobs}
+      CLEARVOIANCE_MINIO_PATH_STYLE: ${MINIO_PATH_STYLE:-true}
     command: >
       serve
       --grpc-addr 0.0.0.0:9100
-      --clickhouse-dsn clickhouse://default:dev@clickhouse:9000/clearvoiance
-      --postgres-dsn postgres://clearvoiance:dev@postgres:5432/clearvoiance?sslmode=disable
-      --minio-endpoint http://minio:9000
-      --minio-access-key dev
-      --minio-secret-key devdevdev
-      --minio-bucket clearvoiance-blobs
-      --minio-path-style
+      --http-addr 0.0.0.0:9101
     ports:
-      - "127.0.0.1:9100:9100"   # gRPC
+      - "127.0.0.1:${ENGINE_GRPC_PORT:-9100}:9100"   # gRPC capture
+      - "127.0.0.1:${ENGINE_HTTP_PORT:-9101}:9101"   # REST + WS control plane
+    # ---- Traefik (uncomment + set labels to expose externally) ------------
+    # networks:
+    #   - default
+    #   - traefik_proxy
+    # labels:
+    #   - "traefik.enable=true"
+    #   - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik_proxy}"
+    #   - "traefik.http.routers.clearvoiance-api.rule=Host(`${TRAEFIK_API_HOST}`)"
+    #   - "traefik.http.routers.clearvoiance-api.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+    #   - "traefik.http.routers.clearvoiance-api.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-le}"
+    #   - "traefik.http.services.clearvoiance-api.loadbalancer.server.port=9101"
+
+  ui:
+    build:
+      context: ../
+      dockerfile: deploy/images/ui/Dockerfile
+      args:
+        # NEXT_PUBLIC_* bakes in at build — change CLEARVOIANCE_API_URL in
+        # .env + rerun `docker compose build ui` to switch engine URLs.
+        NEXT_PUBLIC_CLEARVOIANCE_API: ${CLEARVOIANCE_API_URL:-http://localhost:9101}
+    restart: unless-stopped
+    depends_on:
+      engine:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-3000}:3000"
+    # ---- Traefik (uncomment + set labels to expose externally) ------------
+    # networks:
+    #   - default
+    #   - traefik_proxy
+    # labels:
+    #   - "traefik.enable=true"
+    #   - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik_proxy}"
+    #   - "traefik.http.routers.clearvoiance-ui.rule=Host(`${TRAEFIK_UI_HOST}`)"
+    #   - "traefik.http.routers.clearvoiance-ui.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+    #   - "traefik.http.routers.clearvoiance-ui.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-le}"
+    #   - "traefik.http.services.clearvoiance-ui.loadbalancer.server.port=3000"
+
+  # ---- DB observer (optional) ----------------------------------------------
+  # Correlates slow queries / lock waits in a SUT Postgres to the replay
+  # events that caused them. Uncomment + set CLEARVOIANCE_OBSERVER_* in .env.
+  #
+  # db-observer:
+  #   build:
+  #     context: ../
+  #     dockerfile: deploy/images/engine/Dockerfile   # same image, different entrypoint
+  #   restart: unless-stopped
+  #   depends_on:
+  #     clickhouse:
+  #       condition: service_healthy
+  #   environment:
+  #     CLEARVOIANCE_OBSERVER_POSTGRES_DSN: ${CLEARVOIANCE_OBSERVER_POSTGRES_DSN}
+  #     CLEARVOIANCE_OBSERVER_CLICKHOUSE_DSN: clickhouse://${CLICKHOUSE_USER:-default}:${CLICKHOUSE_PASSWORD:-dev}@clickhouse:9000/${CLICKHOUSE_DB:-clearvoiance}
+  #   entrypoint: ["/usr/local/bin/clearvoiance-observer"]
+  #   command: ["run"]
 
 volumes:
   clickhouse_data:
   minio_data:
   postgres_data:
+
+# ---- Networks --------------------------------------------------------------
+# Uncomment when using the Traefik labels above. The external network must
+# be created out-of-band (usually by your Traefik stack):
+#   docker network create ${TRAEFIK_NETWORK:-traefik_proxy}
+#
+# networks:
+#   traefik_proxy:
+#     external: true
+#     name: ${TRAEFIK_NETWORK:-traefik_proxy}

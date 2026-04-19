@@ -28,14 +28,24 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -ldflags="-s -w -X main.version=${VERSION}" \
       -o /out/clearvoiance \
       ./engine/cmd/clearvoiance
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux \
+    go build \
+      -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /out/clearvoiance-observer \
+      ./db-observer/cmd/clearvoiance-observer
 
 # ---- runtime ----
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build /out/clearvoiance /usr/local/bin/clearvoiance
+COPY --from=build /out/clearvoiance-observer /usr/local/bin/clearvoiance-observer
 
-EXPOSE 8080 9100
+EXPOSE 9100 9101
 USER nonroot:nonroot
 
+# Default entrypoint runs the engine; compose overrides `entrypoint:` for
+# the optional db-observer service.
 ENTRYPOINT ["/usr/local/bin/clearvoiance"]
 CMD ["serve"]
