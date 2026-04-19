@@ -21,6 +21,10 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: "Capture",
+    items: [{ href: "/docs/monitors", label: "Monitors (remote control)" }],
+  },
+  {
     title: "Self-host",
     items: [{ href: "/docs/deployment", label: "Deployment" }],
   },

@@ -144,16 +144,16 @@ function FeatureGrid() {
         "Every slow query + lock wait + deadlock ties back to the exact replay event that caused it. The killer feature.",
     },
     {
+      icon: Plug,
+      title: "Remote-controlled",
+      body:
+        "SDKs register as monitors and sit idle. Click Start on the dashboard to record a window, Stop to finalize — zero overhead when not capturing.",
+    },
+    {
       icon: Gauge,
       title: "Self-hostable",
       body:
         "One Go engine + ClickHouse + MinIO + Postgres via docker-compose. Your data stays yours. Apache-2.0.",
-    },
-    {
-      icon: Plug,
-      title: "Every stack",
-      body:
-        "Express, Koa, Fastify, Strapi, Socket.io, node-cron, BullMQ, pg, Prisma — more languages next.",
     },
   ];
 

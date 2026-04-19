@@ -17,6 +17,9 @@ correlation.
   local engine, capture an HTTP session, replay it in 60 seconds.
 - **[Core concepts](/docs/concepts)** — capture vs. replay vs. hermetic
   vs. observer, and how the four fit together.
+- **[Monitors](/docs/monitors)** — start / stop captures on running
+  services remotely from the dashboard, the way you'd actually use
+  this in production.
 
 ## What's in the box
 
@@ -25,17 +28,21 @@ clearvoiance has four components, all in one repo:
 1. **The SDK** (`@clearvoiance/node`) runs inside your app. It captures
    HTTP, WebSockets, cron, queues, outbound HTTP/fetch, and DB queries,
    streaming events to the engine over gRPC. Framework adapters are
-   optional peer deps — install only what you use.
+   peer-dep-free — install only what you use. Two modes: auto-session
+   (start on boot, good for dev) and remote-controlled "monitors"
+   (idle until the dashboard clicks Start, the production default).
 2. **The engine** is a Go binary that persists events to ClickHouse +
-   MinIO, schedules replays at configurable speedup, and exposes a
-   REST/WebSocket control plane. Self-host via docker-compose.
+   MinIO, schedules replays at configurable speedup, runs the
+   control plane that pushes Start / Stop commands to SDKs, and
+   exposes a REST/WebSocket API. Self-host via docker-compose.
 3. **The DB observer** is a sidecar (or embedded) binary that polls
    `pg_stat_activity`, parses the SDK's
    `application_name = 'clv:<event_id>'`, and correlates every slow
    query back to the replay event that caused it.
-4. **The dashboard** is a Next.js UI that drives the REST API —
-   sessions, replays with live 250ms progress updates, DB observations,
-   API key management.
+4. **The dashboard** is a Next.js UI that drives the engine — monitors,
+   sessions, replays with live 250ms progress + per-endpoint slow-
+   route analysis + capture-vs-replay regression diffs, DB observations,
+   API key + user management.
 
 ## How it's different
 

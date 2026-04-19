@@ -32,9 +32,18 @@ Key properties:
   connection comes back. No lost events on deploys / restarts.
 - **Backpressure-aware.** Large response bodies get hashed + offloaded
   to blob storage (MinIO / S3) instead of traveling the gRPC stream.
-- **Redacted by default.** Authorization, Cookie, Set-Cookie, and other
-  auth-adjacent headers are redacted with `[REDACTED]`; the name of the
-  redaction is recorded on the event for audit.
+- **Full-fidelity by default.** The SDK ships with an empty header
+  denylist — Authorization, Cookie, Set-Cookie all flow through as
+  captured so replay works without auth-strategy acrobatics. For
+  production captures, opt into
+  `RECOMMENDED_HEADER_DENY_PRODUCTION` per adapter to redact secrets.
+- **Capture modes.** Two ways to run the SDK:
+  - *Auto-session*: `client.start()` opens a session immediately; runs
+    until process exit. Good for dev + CI.
+  - *Remote control (Monitors)*: SDK subscribes to the engine's
+    ControlService and waits idle. The dashboard's **Monitors** page
+    drives Start / Stop. Zero overhead while idle. **The right default
+    for production services.** See [Monitors](/docs/monitors).
 
 ## 2. Replay
 
@@ -131,17 +140,21 @@ Key properties:
 
 Putting it together:
 
-1. **Capture** a 1-hour window of production traffic. Events land in
-   ClickHouse, blobs in MinIO.
-2. Stop the capture session. You now have a replayable snapshot.
-3. **Stand up staging** with the SDK in hermetic mode pointing at the
+1. **Register your prod service as a monitor** with
+   `remote: { clientName: "my-api-prod" }` on `createClient`. The
+   SDK subscribes idle — zero capture overhead at rest.
+2. In the dashboard's **Monitors** page, click **Start capture** when
+   you want to record a window. Events land in ClickHouse, blobs in
+   MinIO.
+3. Click **Stop capture**. You now have a replayable snapshot.
+4. **Stand up staging** with the SDK in hermetic mode pointing at the
    same engine: `CLEARVOIANCE_HERMETIC=true CLEARVOIANCE_SOURCE_SESSION_ID=sess_abc`.
-4. Kick off a **replay** at 12×. The engine fires captured HTTP against
+5. Kick off a **replay** at 12×. The engine fires captured HTTP against
    staging, captured crons/queues against the invoke server, captured
    outbounds get served from the mock pack.
-5. The **observer** watches staging's Postgres and writes
+6. The **observer** watches staging's Postgres and writes
    per-event DB observations.
-6. Six minutes later, the dashboard shows every slow query, every lock,
+7. Six minutes later, the dashboard shows every slow query, every lock,
    every deadlock — correlated to the exact captured event that caused
    it.
 

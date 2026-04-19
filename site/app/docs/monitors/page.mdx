@@ -1,0 +1,159 @@
+export const metadata = {
+  title: "Monitors — remote-controlled capture",
+  description:
+    "Register your SDK as a monitor and start/stop captures from the dashboard instead of booting a session on every process start. The right default for production services.",
+};
+
+# Monitors
+
+For development and CI, calling `client.start()` on boot and letting
+the SDK record everything is fine. For production you almost always
+want the opposite: the SDK connects, **waits idle**, and you record a
+specific 10-minute window when something interesting happens.
+
+That's a **monitor** — a long-running SDK registration that sits on a
+control channel, does no capture work, and waits for the dashboard to
+push Start / Stop commands.
+
+## How it works
+
+```
+  SDK (your service)                              Engine
+  ┌─────────────────────┐      Subscribe      ┌───────────────────┐
+  │                     │─────────────────────▶                   │
+  │  createClient({     │◀─ ping (every 15s) ─│  ControlService   │
+  │    remote: {        │◀──  StartCapture  ──│                   │
+  │      clientName:    │                     │  Monitors page    │
+  │      "my-api"       │─── StreamEvents ───▶                   │
+  │    }                │◀──  StopCapture   ──│                   │
+  │  })                 │                     │                   │
+  └─────────────────────┘                     └───────────────────┘
+```
+
+- SDK opens **two** gRPC streams: ControlService.Subscribe (persistent,
+  server→client commands) and CaptureService.StreamEvents (per-capture,
+  SDK→engine events). The first lives for the whole process; the
+  second cycles with each Start / Stop.
+- While idle, `sendBatch()` drops events silently. Middleware runs, no
+  network traffic, no ClickHouse writes.
+- On **Start** (from dashboard): engine pre-creates a session, pushes
+  the session id down; SDK attaches, starts streaming.
+- On **Stop**: SDK flushes in-flight events, closes the capture stream,
+  goes back to idle.
+- **Reconnect resume**: if the SDK reconnects mid-capture (engine
+  restart, network blip, pod reschedule), it gets a StartCapture for
+  the same session id and resumes without fragmenting the recording.
+- **Horizontal replicas**: Swarm / Kubernetes replicas sharing a
+  `clientName` all receive the same Start command and contribute events
+  into one session.
+
+## Wire it in (Node.js)
+
+```ts
+import { createClient } from "@clearvoiance/node";
+import { captureHttp } from "@clearvoiance/node/http/express";
+import { patchOutbound } from "@clearvoiance/node/outbound";
+
+const client = createClient({
+  engine: {
+    url: process.env.CLEARVOIANCE_ENGINE_URL!,
+    apiKey: process.env.CLEARVOIANCE_API_KEY!,
+    tls: true,
+  },
+  // session.name is a fallback label only; actual session ids come
+  // from StartCapture commands.
+  session: { name: "my-api" },
+  // Remote mode. Stable clientName across restarts + replicas.
+  remote: {
+    clientName: "my-api-prod",
+    displayName: "My API (production)",
+    labels: {
+      env: "production",
+      region: "eu-central-1",
+    },
+  },
+  // Optional but recommended: WAL catches events when the engine blinks.
+  wal: { dir: "/var/lib/clearvoiance-wal" },
+});
+
+await client.start();
+
+// Middleware/adapter setup is identical to non-remote mode.
+patchOutbound(client);
+const app = express();
+app.use(captureHttp(client));
+// ...
+```
+
+On boot you'll see:
+
+```
+[clearvoiance] subscribed as monitor "my-api-prod" — waiting for dashboard start
+```
+
+## Using it from the dashboard
+
+Open **[Monitors](https://clearvoiance.vercel.app/docs/concepts)** in the
+dashboard. You should see your client with an **Online** indicator. If
+it says Offline, the SDK's connection to the engine hasn't succeeded —
+check the engine URL + TLS config + API key.
+
+- **Start capture** — opens a dialog for an optional session name
+  (default `<clientName>-<ISO-timestamp>`), then bounces you to the
+  session detail page. Events start streaming in real time.
+- **Stop capture** — flushes + closes the session. Session shows up in
+  Sessions with a replayable window.
+
+When a monitor is Offline and you click Start, the session is still
+created and the capture flag is flipped — the SDK will pick up the
+pending Start on its next reconnect. Useful when you want to record
+the next burst of traffic a scheduled job produces.
+
+## Production flow
+
+The use case this was built for:
+
+1. Capture a 10-minute window in production by clicking Start on the
+   Monitors page.
+2. Take a Postgres snapshot at the end of the window.
+3. Spin up a staging environment that restores the snapshot. Run the
+   SDK there in **hermetic mode**
+   (`CLEARVOIANCE_HERMETIC=true CLEARVOIANCE_SOURCE_SESSION_ID=<id>`).
+4. **Replay** the captured session against the staging environment.
+   Observe slow routes, lock waits, and regressions against the real
+   traffic shape without touching prod.
+
+## Differences from auto-session mode
+
+| | Auto-session | Remote (Monitors) |
+|---|---|---|
+| `client.start()` | Opens a session | Subscribes only, waits idle |
+| Session identity | One per process lifetime | One per Start/Stop click |
+| Idle overhead | Streams events always | Zero — `sendBatch` no-ops |
+| Typical use | Dev, CI, e2e | Production services |
+| Restart behavior | Session restarts with the process | Session survives process restart |
+
+## Troubleshooting
+
+- **Monitor doesn't appear in the dashboard.** The Subscribe stream
+  didn't connect. Check the Strapi / Express logs for
+  `[clearvoiance] control stream error`. Most common cause: the
+  engine URL is the HTTP control plane (`:9101`) instead of the gRPC
+  target (`:9100` or a Traefik h2c route like
+  `clearvoiance-grpc.example.com:443` with `tls: true`).
+- **Click Start but nothing streams.** SDK is subscribed but the
+  capture stream hit an error. Look for
+  `[clearvoiance] failed to attach session from dashboard` in the
+  SDK logs.
+- **Capture session keeps getting auto-closed.** The engine's idle
+  sweeper closes sessions with no heartbeat for 5 minutes. In remote
+  mode this should only happen if the SDK's capture stream is broken —
+  check for connectivity issues to the MinIO / S3 blob endpoint since
+  failed blob uploads can cascade into stream RST.
+
+## Next
+
+- **[Core concepts](/docs/concepts)** — how monitors fit alongside
+  capture, replay, and hermetic mode.
+- **[Deployment](/docs/deployment)** — exposing the gRPC Subscribe
+  endpoint via Traefik.

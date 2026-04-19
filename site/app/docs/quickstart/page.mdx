@@ -52,7 +52,7 @@ import { captureHttp } from "@clearvoiance/node/http/express";
 import { patchOutbound } from "@clearvoiance/node/outbound";
 
 const client = createClient({
-  engine: { url: "127.0.0.1:9100", apiKey: "dev" },
+  engine: { url: "127.0.0.1:9100", apiKey: process.env.CLEARVOIANCE_API_KEY! },
   session: { name: "my-api" },
   // Persist in-flight events across engine restarts:
   wal: { dir: "/var/lib/clearvoiance-wal" },
@@ -82,6 +82,33 @@ const shutdown = async () => {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 ```
+
+### Production mode: remote-controlled capture
+
+For anything beyond dev, you probably don't want capture running on
+every request 24/7. Add a `remote` block to `createClient` — the SDK
+registers as a **monitor** with the engine, idles, and the dashboard's
+Monitors page drives Start / Stop:
+
+```ts
+const client = createClient({
+  engine: { url: "grpc.example.com:443", tls: true, apiKey: /* ... */ },
+  session: { name: "my-api" },
+  remote: {
+    clientName: "my-api-prod",              // stable identity
+    displayName: "My API (production)",
+    labels: { env: "production" },
+  },
+  wal: { dir: "/var/lib/clearvoiance-wal" },
+});
+await client.start();
+// No session opens yet. sendBatch() drops events silently until the
+// dashboard clicks Start.
+```
+
+See **[Monitors](/docs/monitors)** for the full story on reconnect
+resume, replica fan-out, and the production capture → snapshot →
+replay flow this was built for.
 
 ## 4. Generate some traffic
 
