@@ -18,6 +18,7 @@
 import {
   currentEventId as defaultCurrentEventId,
   currentReplayId as defaultCurrentReplayId,
+  newEventId,
 } from "../core/event-context.js";
 import type {
   BlobRef,
@@ -135,8 +136,14 @@ export function emitDbObservation(
       locks: [],
     };
 
+    // Each DbObservationEvent needs its own unique Event.id — a single
+    // HTTP request can fire dozens of queries and they all need distinct
+    // rows in the events table. The linkage back to the HTTP event lives
+    // in `dbObs.causedByEventId`, not here. Prior SDKs reused the HTTP
+    // event id for all DB events of that request, which exploded JOINs
+    // on the events table.
     const event: PbEvent = {
-      id: eventId,
+      id: newEventId(),
       sessionId: "",
       timestampNs: BigInt(Date.now()) * 1_000_000n - durationNs,
       offsetNs: 0n,

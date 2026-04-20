@@ -1,6 +1,6 @@
 {
   "name": "@clearvoiance/node",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Node.js SDK for clearvoiance — capture traffic from your backend and replay it at N× speed.",
   "license": "Apache-2.0",
   "author": "Davit Tavadze",

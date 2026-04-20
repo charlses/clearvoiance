@@ -141,6 +141,12 @@ func (h *dbObsHandler) byEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// event_type != 'db' filter: SDK-emitted DbObservation events land in
+	// the events table too (for stream durability) but they have empty
+	// http_method/http_route. Without the filter the JOIN matches both
+	// the originating HTTP event AND the DB events under the same id,
+	// which inflates cardinality and drops most rows into an empty
+	// (method,route) bucket.
 	rows, err := conn.Query(r.Context(), `
 		SELECT
 		  e.http_method,
@@ -152,6 +158,7 @@ func (h *dbObsHandler) byEndpoint(w http.ResponseWriter, r *http.Request) {
 		FROM db_observations o
 		INNER JOIN events e ON e.id = o.event_id
 		WHERE o.replay_id = ?
+		  AND e.event_type != 'db'
 		GROUP BY e.http_method, route
 		ORDER BY sum(o.duration_ns) DESC
 		LIMIT ?

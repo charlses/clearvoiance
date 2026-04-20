@@ -191,7 +191,9 @@ describe("instrumentKnex (unit)", () => {
       adapter: string;
       db: { causedByEventId: string; queryFingerprint: string; queryText: string };
     };
-    expect(event.id).toBe("ev_emit1");
+    // event.id is unique per DbObservation; HTTP event id is on causedByEventId.
+    expect(event.id).toMatch(/^ev_/);
+    expect(event.id).not.toBe("ev_emit1");
     expect(event.adapter).toBe("db.knex");
     expect(event.db.causedByEventId).toBe("ev_emit1");
     expect(event.db.queryFingerprint).toBe("SELECT * FROM leads WHERE id = ?");

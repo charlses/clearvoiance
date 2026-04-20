@@ -106,7 +106,10 @@ describe("instrumentMongoose", () => {
 
     expect(sent.length).toBe(1);
     const ev = sent[0]!;
-    expect(ev.id).toBe("ev_http_42");
+    // Each DbObservation event gets its own unique id; the linkage to the
+    // triggering HTTP event lives in db.causedByEventId.
+    expect(ev.id).toMatch(/^ev_/);
+    expect(ev.id).not.toBe("ev_http_42");
     expect(ev.adapter).toBe("db.mongoose");
     expect(ev.db).toBeDefined();
     expect(ev.db?.causedByEventId).toBe("ev_http_42");
