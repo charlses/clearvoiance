@@ -1,15 +1,41 @@
 # @clearvoiance/node
 
-> Capture real traffic from your backend — HTTP, WebSockets, cron, queues,
-> outbound calls, DB queries — and replay it at N× speed against a hermetic
-> clone. Find the breaking points *before* production does.
+> **Record real production traffic and replay it safely at N× speed.**
+>
+> Catch breaking points before they hit production — without triggering
+> real APIs, payments, or side effects.
+
+## Why?
+
+Staging environments lie.
+
+Mocks drift.
+Synthetic tests miss real edge cases.
+
+clearvoiance records actual traffic — HTTP, WebSockets, cron, queues,
+outbound calls, DB queries — and replays it in a hermetic environment
+so you can test against reality, not guesses.
 
 This is the Node.js SDK. It runs inside your app, streams captured events
 to the [clearvoiance engine](https://github.com/charlses/clearvoiance),
 and (in hermetic mode) serves captured outbound calls back from a mock
 pack during replay so your tests never hit real external APIs.
 
-- **Docs**: https://github.com/charlses/clearvoiance
+## 60-second flow
+
+```
+  1. install SDK              npm install @clearvoiance/node
+  2. hit your endpoint        curl http://localhost:3000/api/leads
+  3. see traffic appear       open dashboard → events stream in live
+  4. replay at 10×            click Replay → 10 min captured → 1 min real
+  5. break something safely   outbound calls mocked, zero real damage
+```
+
+Five steps. No staging environment, no synthetic scripts. Real traffic,
+safe replay — see the full walkthrough in the
+[quickstart](https://clearvoiance.vercel.app/docs/quickstart).
+
+- **Docs**: https://clearvoiance.vercel.app/docs
 - **Engine**: Go, self-hosted (gRPC + REST + WebSocket control plane)
 - **Node**: 18+ required (uses stable `AsyncLocalStorage` + global `fetch`)
 - **License**: Apache-2.0
@@ -23,8 +49,8 @@ pnpm add @clearvoiance/node
 ```
 
 All framework integrations (Express, Koa, Strapi, Fastify, Socket.io,
-node-cron, BullMQ, pg, Prisma) are optional peer dependencies — install
-only the ones you actually use.
+node-cron, BullMQ, pg, Knex, Prisma, Mongoose) are optional peer
+dependencies — install only the ones you actually use.
 
 ## Getting an API key
 
@@ -216,11 +242,24 @@ the SDK's own engine traffic is never self-recorded.
 
 ### Database
 
-For correlation between DB observations and replay events, the SDK sets
-a connection-level `application_name = 'clv:<event_id>'` on every query.
-The db-observer parses that back out when scanning `pg_stat_activity`.
+Two correlation strategies ship in the box, picked automatically by the
+adapter you import:
 
-**node-postgres / pg-Pool consumers (including Knex):**
+1. **Observer-based** (Postgres family) — SDK stamps every connection
+   with `application_name = 'clv:<replayId?>:<eventId>'`. The
+   out-of-band db-observer polls `pg_stat_activity` + `pg_stat_statements`
+   and emits `DbObservationEvent`s tagged with `caused_by_event_id`.
+   Zero in-process overhead on your query path.
+
+2. **SDK-side emission** (Mongo) — MongoDB has no stable equivalent of
+   `pg_stat_activity`, so the adapter times every op inside mongoose's
+   middleware and emits a `DbObservationEvent` directly through the
+   client. No observer binary required.
+
+Both paths produce the same event shape, so the dashboard shows DB
+activity from all drivers on one timeline.
+
+**node-postgres / raw pg.Pool:**
 
 ```ts
 import { Pool } from "pg";
@@ -229,6 +268,20 @@ import { instrumentPg } from "@clearvoiance/node/db/postgres";
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 instrumentPg(pool, { replayId: process.env.CLEARVOIANCE_REPLAY_ID });
 ```
+
+**Knex** — Knex manages its own tarn.js pool under the hood, so use the
+Knex-specific entry point instead of `instrumentPg`:
+
+```ts
+import knex from "knex";
+import { instrumentKnex } from "@clearvoiance/node/db/knex";
+
+const db = knex({ client: "pg", connection: process.env.DATABASE_URL });
+instrumentKnex(db, { replayId: process.env.CLEARVOIANCE_REPLAY_ID });
+```
+
+The adapter is a silent no-op when `db.client.driverName` isn't `pg`
+(mysql2, sqlite, etc.), so it's safe to wire up unconditionally.
 
 **Prisma** (runs its own engine process; the pg-pool hook doesn't see it):
 
@@ -240,6 +293,38 @@ const prisma = instrumentPrisma(new PrismaClient(), {
   replayId: process.env.CLEARVOIANCE_REPLAY_ID,
 });
 ```
+
+**Mongoose** — install *before* any model is defined so every schema
+picks up the plugin. For NestJS / deferred-registration frameworks,
+call this from the bootstrap hook:
+
+```ts
+import mongoose from "mongoose";
+import { instrumentMongoose } from "@clearvoiance/node/db/mongoose";
+
+instrumentMongoose(mongoose, client, {
+  slowThresholdMs: 50,                          // 0 = emit every op
+  replayId: process.env.CLEARVOIANCE_REPLAY_ID,
+});
+```
+
+#### Adapter contract
+
+If you want to add support for another driver, a DB adapter needs to
+do exactly one of these two things:
+
+- **Observer-style**: set a per-connection identifier that the observer
+  can parse. The format is `clv:<replayId?>:<eventId>`, truncated to
+  the driver's identifier limit (63 chars for Postgres). Existing
+  adapters use `parseClvAppName()` from `@clearvoiance/node/db/postgres`
+  so observers see one shape regardless of source.
+- **SDK-side**: time each op, read the active `eventId` via
+  `currentEventId()` (exported from the top-level package), and call
+  `client.sendBatch([event])` with an `adapter: "db.<driver>"` event
+  carrying a `DbObservationEvent` whose `caused_by_event_id` matches.
+
+Either way, drop ops that fire outside any event scope — those have
+nothing to correlate against and only add noise.
 
 ### Auto-detect
 
@@ -383,6 +468,7 @@ Point your SDK at `127.0.0.1:9100` and visit the dashboard at
 | SDK version | Engine API |
 | ----------- | ---------- |
 | `0.1.x`     | `v1`       |
+| `0.2.x`     | `v1`       |
 
 Minor SDK bumps stay wire-compatible with older engines. Major bumps may
 require an engine upgrade — check the release notes.

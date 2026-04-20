@@ -56,6 +56,8 @@ export default function HomePage() {
       <SiteHeader />
       <main className="flex-1">
         <Hero />
+        <WhySection />
+        <FlowSection />
         <FeatureGrid />
         <QuickstartSection />
         <ReplaySection />
@@ -82,15 +84,16 @@ function Hero() {
             Phase 6 shipped · Phase 7 adapters live
           </span>
           <h1 className="max-w-3xl text-4xl font-semibold tracking-tight sm:text-5xl md:text-6xl">
-            Replay real production traffic
+            Record real production traffic
             <span className="text-accent">.</span>{" "}
-            <span className="text-muted-foreground">Find breaking points before users do.</span>
+            <span className="text-muted-foreground">Replay it safely at N× speed.</span>
           </h1>
           <p className="max-w-2xl text-lg text-muted-foreground">
-            clearvoiance captures every input to your backend — HTTP, WebSockets,
-            cron, queues, outbound calls, DB queries — and replays it at N× speed
-            against a hermetic clone. With per-event DB correlation: every slow
-            query traces back to the exact request that caused it.
+            Catch breaking points before they hit production — without
+            triggering real APIs, payments, or side effects. clearvoiance
+            captures every input to your backend and replays it against a
+            hermetic clone, with per-event DB correlation so every slow query
+            traces back to the exact request that caused it.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <Button size="lg" asChild>
@@ -112,6 +115,89 @@ function Hero() {
             <InstallBlock command="npm install @clearvoiance/node" />
           </div>
         </div>
+      </div>
+    </section>
+  );
+}
+
+function WhySection() {
+  return (
+    <section className="border-t border-border py-20">
+      <div className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8">
+        <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+          Why?
+        </h2>
+        <p className="mt-6 text-lg text-muted-foreground">
+          Staging environments lie.
+        </p>
+        <p className="mt-3 text-lg text-muted-foreground">
+          Mocks drift. Synthetic tests miss real edge cases.
+        </p>
+        <p className="mt-6 text-lg">
+          clearvoiance records{" "}
+          <span className="font-semibold text-foreground">actual traffic</span>{" "}
+          and replays it in a hermetic environment so you can test against
+          reality — not guesses.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function FlowSection() {
+  const steps: Array<{ title: string; body: string }> = [
+    {
+      title: "Install the SDK",
+      body: "npm install @clearvoiance/node — one dep, zero framework peers pulled in.",
+    },
+    {
+      title: "Hit your endpoint",
+      body: "Real request, real headers, real body. The adapter wraps it as a captured event.",
+    },
+    {
+      title: "See the traffic appear",
+      body: "Events stream into the dashboard live — route, status, DB time, outbound calls.",
+    },
+    {
+      title: "Replay at 10×",
+      body: "Click Replay, pick a target. Every captured event fires again at compressed time.",
+    },
+    {
+      title: "Break something safely",
+      body: "Outbound calls served from the mock pack. Zero real emails, no real charges, no real damage.",
+    },
+  ];
+
+  return (
+    <section className="border-t border-border bg-muted/20 py-20">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+        <div className="max-w-2xl">
+          <div className="inline-flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-accent">
+            <span className="size-1 rounded-full bg-accent" /> 60-second flow
+          </div>
+          <h2 className="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">
+            From zero to broken-on-purpose.
+          </h2>
+          <p className="mt-3 text-muted-foreground">
+            Five steps. No staging environment, no synthetic scripts, no
+            hand-written load profiles. Just real traffic and a safe place to
+            replay it.
+          </p>
+        </div>
+        <ol className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          {steps.map((step, i) => (
+            <li
+              key={step.title}
+              className="rounded-lg border border-border bg-background p-5"
+            >
+              <div className="flex size-8 items-center justify-center rounded-full bg-accent-subtle font-semibold text-accent">
+                {i + 1}
+              </div>
+              <h3 className="mt-4 text-base font-semibold">{step.title}</h3>
+              <p className="mt-2 text-sm text-muted-foreground">{step.body}</p>
+            </li>
+          ))}
+        </ol>
       </div>
     </section>
   );
@@ -277,7 +363,7 @@ function AdaptersSection() {
     },
     {
       category: "Databases",
-      items: ["node-postgres / Knex", "Prisma"],
+      items: ["node-postgres", "Knex", "Prisma", "Mongoose"],
     },
     {
       category: "Detection",

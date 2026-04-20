@@ -1,6 +1,6 @@
 {
   "name": "@clearvoiance/node",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Node.js SDK for clearvoiance — capture traffic from your backend and replay it at N× speed.",
   "license": "Apache-2.0",
   "author": "Davit Tavadze",
@@ -12,7 +12,7 @@
     "url": "https://github.com/charlses/clearvoiance.git",
     "directory": "sdk-node"
   },
-  "homepage": "https://github.com/charlses/clearvoiance/tree/main/sdk-node",
+  "homepage": "https://clearvoiance.vercel.app",
   "bugs": {
     "url": "https://github.com/charlses/clearvoiance/issues"
   },
@@ -118,6 +118,16 @@
         "default": "./dist/db/postgres.cjs"
       }
     },
+    "./db/knex": {
+      "import": {
+        "types": "./dist/db/knex.d.mts",
+        "default": "./dist/db/knex.mjs"
+      },
+      "require": {
+        "types": "./dist/db/knex.d.cts",
+        "default": "./dist/db/knex.cjs"
+      }
+    },
     "./db/prisma": {
       "import": {
         "types": "./dist/db/prisma.d.mts",
@@ -126,6 +136,16 @@
       "require": {
         "types": "./dist/db/prisma.d.cts",
         "default": "./dist/db/prisma.cjs"
+      }
+    },
+    "./db/mongoose": {
+      "import": {
+        "types": "./dist/db/mongoose.d.mts",
+        "default": "./dist/db/mongoose.mjs"
+      },
+      "require": {
+        "types": "./dist/db/mongoose.d.cts",
+        "default": "./dist/db/mongoose.cjs"
       }
     },
     "./http/fastify": {

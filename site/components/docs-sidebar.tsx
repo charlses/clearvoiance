@@ -22,7 +22,10 @@ const SECTIONS: Section[] = [
   },
   {
     title: "Capture",
-    items: [{ href: "/docs/monitors", label: "Monitors (remote control)" }],
+    items: [
+      { href: "/docs/monitors", label: "Monitors (remote control)" },
+      { href: "/docs/db-correlation", label: "Database correlation" },
+    ],
   },
   {
     title: "Self-host",
@@ -33,7 +36,7 @@ const SECTIONS: Section[] = [
 export function DocsSidebar() {
   const pathname = usePathname();
   return (
-    <ScrollArea className="h-[calc(100vh-3.5rem)] w-56 shrink-0 border-r border-border bg-muted/20 lg:sticky lg:top-14">
+    <ScrollArea className="h-full w-56 shrink-0 border-r border-border bg-muted/20">
       <nav className="px-4 py-6 lg:px-5">
         {SECTIONS.map((section) => (
           <div key={section.title} className="mb-6">

@@ -6,8 +6,8 @@ export default function DocsLayout({ children }: { children: React.ReactNode }) 
   return (
     <div className="flex min-h-screen flex-col">
       <SiteHeader />
-      <div className="mx-auto flex w-full max-w-7xl flex-1 gap-8 px-4 sm:px-6 lg:px-8">
-        <aside className="hidden lg:block">
+      <div className="mx-auto flex w-full max-w-7xl flex-1 items-start gap-8 px-4 sm:px-6 lg:px-8">
+        <aside className="hidden lg:sticky lg:top-14 lg:block lg:h-[calc(100vh-3.5rem)] lg:self-start lg:shrink-0">
           <DocsSidebar />
         </aside>
         <main className="min-w-0 flex-1 py-10 lg:pl-6">

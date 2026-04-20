@@ -11,3 +11,5 @@ export {
   RECOMMENDED_HEADER_DENY_PRODUCTION,
 } from "./core/redaction.js";
 export type { HeaderMatcher } from "./core/redaction.js";
+export { currentEventId, runWithEvent } from "./core/event-context.js";
+export type { EventContext } from "./core/event-context.js";

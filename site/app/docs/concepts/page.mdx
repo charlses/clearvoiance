@@ -125,8 +125,12 @@ observer poll  → pg_stat_activity WHERE application_name LIKE 'clv:%'
 Key properties:
 
 - **`application_name` as the correlation key.** Connection-level SQL
-  that every Postgres connection carries. Both `instrumentPg`
-  (node-postgres + Knex) and `instrumentPrisma` set it per query.
+  that every Postgres connection carries. `instrumentPg`
+  (node-postgres), `instrumentKnex` (tarn.js-managed pool), and
+  `instrumentPrisma` all emit the same `clv:<replayId?>:<eventId>`
+  shape. See [Database correlation](/docs/db-correlation) for the full
+  adapter story, including Mongoose (which takes an SDK-side path
+  since MongoDB has no equivalent introspection view).
 - **Threshold-based emission.** Queries slower than
   `--slow-threshold-ms` (default 100ms) become SlowQuery observations;
   queries in `wait_event_type = 'Lock'` become LockWait observations.

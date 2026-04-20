@@ -1,0 +1,248 @@
+export const metadata = {
+  title: "Database correlation",
+  description:
+    "How clearvoiance ties slow queries back to the request / cron / queue event that caused them — across Postgres, Knex, Prisma, and Mongoose.",
+};
+
+# Database correlation
+
+The moment a replay shows a route getting hammered by a slow query, the
+next question is always the same: *which query, and which request
+fired it?* This page covers how clearvoiance answers that without
+patching your ORM or adding a span to every statement.
+
+There are exactly two strategies, picked automatically by the adapter
+you import from the SDK:
+
+1. **Observer-based** — the SDK stamps an identifier onto every
+   database connection; an out-of-band observer reads introspection
+   tables (`pg_stat_activity`, `pg_stat_statements`) and emits
+   observation events. **Zero in-process overhead on your query path.**
+2. **SDK-side emission** — the adapter hooks the driver's middleware,
+   times each op, and emits a `DbObservationEvent` directly.
+   **Used where no suitable introspection view exists** (MongoDB).
+
+Both paths produce the same event shape, so the dashboard shows DB
+activity from all drivers on one timeline.
+
+## The identifier format
+
+Whichever strategy is in play, the SDK encodes the active event id
+into an identifier the observer can parse back out:
+
+```
+clv:<replayId?>:<eventId>
+```
+
+- `clv:` — fixed prefix so multiple clearvoiance installs on the same
+  DB don't clobber non-clearvoiance connections.
+- `<replayId>` — optional. Set when the SDK is running in a replay so
+  the dashboard can filter to ops that happened during that specific
+  replay (vs. the original capture).
+- `<eventId>` — the id of the HTTP / cron / queue / socket event that
+  opened the current `AsyncLocalStorage` scope. Empty when the query
+  fires outside a capture scope.
+
+For Postgres this goes into `application_name`, which is truncated to
+63 bytes by the server — the SDK truncates before sending so the
+round-trip stays exact.
+
+## Supported drivers
+
+| Driver / ORM   | Strategy         | Import                                 |
+| -------------- | ---------------- | -------------------------------------- |
+| `pg` (Pool)    | Observer-based   | `@clearvoiance/node/db/postgres`       |
+| Knex (pg)      | Observer-based   | `@clearvoiance/node/db/knex`           |
+| Prisma (pg)    | Observer-based   | `@clearvoiance/node/db/prisma`         |
+| Mongoose       | SDK-side emit    | `@clearvoiance/node/db/mongoose`       |
+
+Drivers not listed are safe to use alongside — the SDK just won't
+produce DB observations for them. Knex in particular is a silent
+no-op when `db.client.driverName !== "pg"`, so it's safe to wire up
+unconditionally in apps that mix drivers across environments.
+
+## Observer-based (Postgres)
+
+The flow for every query your app runs under a capture scope:
+
+```
+  your code             SDK (per-connection)       observer           engine
+  ┌───────────┐   ┌────────────────────────┐   ┌────────────┐   ┌─────────┐
+  │ knex      │──▶│ SET application_name   │──▶│ polls      │──▶│ emits   │
+  │ .select() │   │   = 'clv:ev_a1b2'      │   │ pg_stat_*  │   │ DbObs   │
+  └───────────┘   └────────────────────────┘   └────────────┘   └─────────┘
+                      ↑                             │
+                      │ once per connection         │ correlates on
+                      │ on the first query of       │ application_name →
+                      │ each AsyncLocalStorage      │ sets caused_by_event_id
+                      │ scope                       │
+```
+
+Why SET + observer, not client-side interceptors:
+
+- **Truthful timing.** The observer reports what the database actually
+  did, including lock waits and disk I/O. An interceptor only sees
+  wall-clock time on the client side.
+- **No per-query cost.** The SET happens once per connection per event;
+  the rest of your queries run un-instrumented.
+- **Works for queries the app doesn't know it's running.** Prisma's
+  query engine, Strapi's populate queries, background connection
+  keep-alives — everything that shares the pool gets tagged.
+
+### pg.Pool (raw)
+
+```ts
+import { Pool } from "pg";
+import { instrumentPg } from "@clearvoiance/node/db/postgres";
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+instrumentPg(pool, { replayId: process.env.CLEARVOIANCE_REPLAY_ID });
+```
+
+`instrumentPg` subscribes to `pool.on("connect")` so every new client
+gets wrapped on creation. Pre-existing clients are wrapped retroactively
+if `pool._clients` is readable.
+
+### Knex
+
+Knex manages its own tarn.js pool, so the `pool.on("connect")` hook
+above doesn't fire on the clients Knex actually uses. The Knex adapter
+instead overrides `knex.client.acquireRawConnection` so every
+`pg.Client` Knex creates comes back already wrapped.
+
+```ts
+import knex from "knex";
+import { instrumentKnex } from "@clearvoiance/node/db/knex";
+
+const db = knex({ client: "pg", connection: process.env.DATABASE_URL });
+instrumentKnex(db, { replayId: process.env.CLEARVOIANCE_REPLAY_ID });
+```
+
+The adapter also walks `db.client.pool._freeObjects` + `_usedObjects`
+to retroactively wrap any connections Knex opened before
+`instrumentKnex` was called. Useful in Strapi-style setups where the
+query builder is constructed well before middleware boots.
+
+### Prisma
+
+Prisma's query engine is a separate Node.js process the client talks
+to over a local socket, so the pg-Pool hook can't reach it. The Prisma
+adapter uses Prisma's own middleware API to set the application_name
+at the start of each transaction.
+
+```ts
+import { PrismaClient } from "@prisma/client";
+import { instrumentPrisma } from "@clearvoiance/node/db/prisma";
+
+const prisma = instrumentPrisma(new PrismaClient(), {
+  replayId: process.env.CLEARVOIANCE_REPLAY_ID,
+});
+```
+
+### Running the observer
+
+Observer-based strategies require the observer to be running somewhere
+that can reach your Postgres. Typical setup: one observer container
+alongside the engine, pointed at the same DB your SUT uses. See the
+[Deployment guide](/docs/deployment) for the compose / stack config.
+
+The observer's poll interval is configurable (default 1s) and it only
+reports queries whose `query_start` is inside an active session, so
+idle DB traffic doesn't show up in the dashboard.
+
+## SDK-side emission (Mongoose)
+
+MongoDB doesn't have a `pg_stat_activity` equivalent that's stable
+across versions and deployment modes (Atlas, self-hosted, replica set).
+Rather than ship a MongoDB observer that breaks on every server rev,
+the Mongoose adapter takes the in-process path:
+
+```
+  your code                       SDK plugin                   engine
+  ┌───────────────┐   ┌──────────────────────────────┐   ┌──────────┐
+  │ User.find()   │──▶│ pre hook: record hrtime      │──▶│ DbObs    │
+  │               │   │ post hook: compute duration, │   │ event    │
+  │               │   │            emit DbObsEvent   │   │          │
+  └───────────────┘   └──────────────────────────────┘   └──────────┘
+```
+
+The plugin installs via `mongoose.plugin(...)` so every **future**
+schema picks it up. Schemas registered before the install don't get
+the hook — wire it up at the top of your bootstrap:
+
+```ts
+import mongoose from "mongoose";
+import { createClient } from "@clearvoiance/node";
+import { instrumentMongoose } from "@clearvoiance/node/db/mongoose";
+
+const client = createClient({ /* ... */ });
+await client.start();
+
+// Install BEFORE any Model is defined.
+instrumentMongoose(mongoose, client, {
+  slowThresholdMs: 50,          // 0 = emit every op (chatty but full fidelity)
+  replayId: process.env.CLEARVOIANCE_REPLAY_ID,
+});
+```
+
+What gets hooked:
+
+- **Query middleware**: `find`, `findOne`, `findOneAndUpdate`,
+  `findOneAndDelete`, `updateOne`, `updateMany`, `deleteOne`,
+  `deleteMany`, `replaceOne`, `countDocuments`,
+  `estimatedDocumentCount`, `distinct`, `aggregate`.
+- **Document middleware**: `save`, `validate`, `remove`, `deleteOne`.
+
+Each emitted event carries `query_fingerprint = "<Model>.<op>"` and
+`query_text = "<Model>.<op>(<short filter JSON or empty>)"`. Filter
+payloads are dropped when they exceed 200 chars to avoid silently
+persisting PII into ClickHouse.
+
+Ops that fire outside any capture scope are dropped without being
+emitted — there's nothing to correlate them to, and they'd only add
+noise.
+
+## Writing your own adapter
+
+The SDK is deliberately small and the adapter surface is just two
+functions. If you need to support a driver that isn't in the table
+above, pick whichever strategy fits:
+
+### Observer-style contract
+
+Your adapter should set a per-connection identifier whose format is:
+
+```
+clv:<replayId?>:<eventId>
+```
+
+truncated to the driver's identifier limit. For Postgres re-use
+`parseClvAppName` from `@clearvoiance/node/db/postgres` so observers
+see one shape regardless of source. The identifier must update on
+every event-scope change, ideally once per acquired connection.
+
+### SDK-side contract
+
+1. Read the active event id via `currentEventId()` (exported from the
+   top-level `@clearvoiance/node` package).
+2. Time the op with `process.hrtime.bigint()`.
+3. Build a `DbObservationEvent` with `caused_by_event_id` set to the
+   captured id and `observation_type = SLOW_QUERY`.
+4. Wrap it in an `Event` with `adapter: "db.<driver>"`,
+   `timestamp_ns`, and a unique `id`.
+5. Call `client.sendBatch([event])`.
+
+Drop ops that fire outside any event scope. Respect a
+`slowThresholdMs` option so users can opt out of emitting fast queries
+in high-QPS apps.
+
+The Mongoose adapter's 5-test suite is a reasonable template to copy.
+
+## Next
+
+- **[Core concepts](/docs/concepts)** — how DB observations fit into
+  the broader capture / replay picture.
+- **[Monitors](/docs/monitors)** — trigger a capture from the dashboard
+  so the DB correlation has events to attach itself to.
+- **[Deployment](/docs/deployment)** — running the observer alongside
+  the engine.

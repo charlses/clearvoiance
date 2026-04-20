@@ -1,15 +1,24 @@
 export const metadata = {
   title: "Docs",
   description:
-    "clearvoiance captures real traffic and replays it at N× against a hermetic clone. Read the quickstart or dive into the concepts.",
+    "Record real production traffic and replay it safely at N× speed. Catch breaking points before they hit production — without triggering real APIs, payments, or side effects.",
 };
 
 # Documentation
 
-**clearvoiance** is a self-hostable traffic capture + time-compressed
-replay system. This section walks through how to install the SDK, run an
-engine locally, capture your first session, and replay it with DB
-correlation.
+> **Record real production traffic and replay it safely at N× speed.**
+>
+> Catch breaking points before they hit production — without triggering
+> real APIs, payments, or side effects.
+
+## Why?
+
+Staging environments lie.
+
+Mocks drift. Synthetic tests miss real edge cases.
+
+**clearvoiance** records actual traffic and replays it in a hermetic
+environment so you can test against reality — not guesses.
 
 ## Start here
 
@@ -20,6 +29,9 @@ correlation.
 - **[Monitors](/docs/monitors)** — start / stop captures on running
   services remotely from the dashboard, the way you'd actually use
   this in production.
+- **[Database correlation](/docs/db-correlation)** — how slow queries
+  get pinned back to the exact request that caused them, across
+  Postgres, Knex, Prisma, and Mongoose.
 
 ## What's in the box
 
@@ -38,7 +50,10 @@ clearvoiance has four components, all in one repo:
 3. **The DB observer** is a sidecar (or embedded) binary that polls
    `pg_stat_activity`, parses the SDK's
    `application_name = 'clv:<event_id>'`, and correlates every slow
-   query back to the replay event that caused it.
+   query back to the replay event that caused it. For MongoDB (no
+   equivalent introspection view), the SDK emits observations directly
+   from the Mongoose adapter — see
+   [Database correlation](/docs/db-correlation).
 4. **The dashboard** is a Next.js UI that drives the engine — monitors,
    sessions, replays with live 250ms progress + per-endpoint slow-
    route analysis + capture-vs-replay regression diffs, DB observations,
