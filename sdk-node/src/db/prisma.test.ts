@@ -31,10 +31,20 @@ function fakePrisma(): FakeHarness {
       }
       return {
         ...instance,
-        runOperation: (args: unknown) =>
+        runOperation: (
+          args: unknown,
+          meta?: { model?: string; operation?: string; delayMs?: number },
+        ) =>
           handler!({
+            model: meta?.model,
+            operation: meta?.operation,
             args,
-            query: async (a: unknown) => ({ rows: [{ ran: true, with: a }] }),
+            query: async (a: unknown) => {
+              if (meta?.delayMs) {
+                await new Promise((r) => setTimeout(r, meta.delayMs));
+              }
+              return { rows: [{ ran: true, with: a }] };
+            },
           }),
       };
     },
@@ -112,5 +122,68 @@ describe("instrumentPrisma", () => {
     const call = mock.mock.calls[0]![0] as string;
     const appName = call.replace(/^SET application_name = '/, "").replace(/'$/, "");
     expect(appName.length).toBeLessThanOrEqual(63);
+  });
+
+  it("emits a DbObservationEvent per operation when emit.client is set", async () => {
+    const { instance } = fakePrisma();
+    const sent: unknown[] = [];
+    const client = {
+      sendBatch: async (events: unknown[]): Promise<void> => {
+        sent.push(...events);
+      },
+    };
+    const wrapped = instrumentPrisma(
+      instance as unknown as Parameters<typeof instrumentPrisma>[0],
+      { emit: { client, slowThresholdMs: 0 } },
+    ) as FakePrisma & {
+      runOperation: (
+        a: unknown,
+        meta?: { model?: string; operation?: string; delayMs?: number },
+      ) => Promise<unknown>;
+    };
+
+    await runWithEvent({ eventId: "ev_pr_emit" }, async () => {
+      await wrapped.runOperation(
+        { where: { id: 42 } },
+        { model: "User", operation: "findUnique", delayMs: 2 },
+      );
+    });
+
+    expect(sent.length).toBe(1);
+    const event = sent[0] as {
+      adapter: string;
+      db: { causedByEventId: string; queryFingerprint: string };
+      metadata: Record<string, string>;
+    };
+    expect(event.adapter).toBe("db.prisma");
+    expect(event.db.causedByEventId).toBe("ev_pr_emit");
+    expect(event.db.queryFingerprint).toBe("User.findUnique");
+    expect(event.metadata.prisma_op).toBe("findUnique");
+    expect(event.metadata.prisma_model).toBe("User");
+  });
+
+  it("drops emitted observations below slowThresholdMs", async () => {
+    const { instance } = fakePrisma();
+    const sent: unknown[] = [];
+    const client = {
+      sendBatch: async (events: unknown[]): Promise<void> => {
+        sent.push(...events);
+      },
+    };
+    const wrapped = instrumentPrisma(
+      instance as unknown as Parameters<typeof instrumentPrisma>[0],
+      { emit: { client, slowThresholdMs: 1000 } },
+    ) as FakePrisma & {
+      runOperation: (
+        a: unknown,
+        meta?: { model?: string; operation?: string; delayMs?: number },
+      ) => Promise<unknown>;
+    };
+
+    await runWithEvent({ eventId: "ev_pr_fast" }, async () => {
+      await wrapped.runOperation({}, { model: "User", operation: "findMany" });
+    });
+
+    expect(sent.length).toBe(0);
   });
 });

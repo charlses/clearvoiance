@@ -258,22 +258,27 @@ the SDK's own engine traffic is never self-recorded.
 
 ### Database
 
-Two correlation strategies ship in the box, picked automatically by the
-adapter you import:
+Two correlation strategies ship in the box, and every adapter supports
+both — pick whichever fits (or run them in parallel):
 
-1. **Observer-based** (Postgres family) — SDK stamps every connection
-   with `application_name = 'clv:<replayId?>:<eventId>'`. The
-   out-of-band db-observer polls `pg_stat_activity` + `pg_stat_statements`
-   and emits `DbObservationEvent`s tagged with `caused_by_event_id`.
-   Zero in-process overhead on your query path.
+1. **Observer-based** — SDK stamps every connection with
+   `application_name = 'clv:<replayId?>:<eventId>'`. The out-of-band
+   db-observer polls `pg_stat_activity` and emits `DbObservationEvent`s
+   tagged with `caused_by_event_id`. Zero per-query overhead, but only
+   catches queries that were running when the observer polled — very
+   fast queries (< poll interval) slip through invisibly.
 
-2. **SDK-side emission** (Mongo) — MongoDB has no stable equivalent of
-   `pg_stat_activity`, so the adapter times every op inside mongoose's
-   middleware and emits a `DbObservationEvent` directly through the
-   client. No observer binary required.
+2. **SDK-side emission** — opt in by passing `emit: { client }` to any
+   adapter. The wrapper times every query and streams a
+   `DbObservationEvent` through the SDK client directly. Catches 100%
+   of queries above `slowThresholdMs`. Adds a few µs per query and a
+   small event payload per emission, so keep `slowThresholdMs` non-zero
+   on high-QPS apps. Required for Mongo (no `pg_stat_activity`
+   equivalent); optional-but-recommended for Postgres when the observer
+   misses too much.
 
 Both paths produce the same event shape, so the dashboard shows DB
-activity from all drivers on one timeline.
+activity from all drivers on one timeline regardless of how it got there.
 
 **node-postgres / raw pg.Pool:**
 
@@ -282,7 +287,11 @@ import { Pool } from "pg";
 import { instrumentPg } from "@clearvoiance/node/db/postgres";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-instrumentPg(pool, { replayId: process.env.CLEARVOIANCE_REPLAY_ID });
+instrumentPg(pool, {
+  replayId: process.env.CLEARVOIANCE_REPLAY_ID,
+  // Optional: also emit a DbObservationEvent per query via the SDK.
+  emit: { client, slowThresholdMs: 10 },
+});
 ```
 
 **Knex** — Knex manages its own tarn.js pool under the hood, so use the
@@ -293,7 +302,10 @@ import knex from "knex";
 import { instrumentKnex } from "@clearvoiance/node/db/knex";
 
 const db = knex({ client: "pg", connection: process.env.DATABASE_URL });
-instrumentKnex(db, { replayId: process.env.CLEARVOIANCE_REPLAY_ID });
+instrumentKnex(db, {
+  replayId: process.env.CLEARVOIANCE_REPLAY_ID,
+  emit: { client, slowThresholdMs: 10 },
+});
 ```
 
 The adapter is a silent no-op when `db.client.driverName` isn't `pg`
@@ -307,12 +319,13 @@ import { instrumentPrisma } from "@clearvoiance/node/db/prisma";
 
 const prisma = instrumentPrisma(new PrismaClient(), {
   replayId: process.env.CLEARVOIANCE_REPLAY_ID,
+  emit: { client, slowThresholdMs: 10 },
 });
 ```
 
 **Mongoose** — install *before* any model is defined so every schema
-picks up the plugin. For NestJS / deferred-registration frameworks,
-call this from the bootstrap hook:
+picks up the plugin. Mongoose is emit-only (no observer equivalent),
+so `client` is a required arg:
 
 ```ts
 import mongoose from "mongoose";

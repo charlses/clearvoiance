@@ -150,4 +150,105 @@ describe("instrumentKnex (unit)", () => {
     expect(match).not.toBeNull();
     expect((match?.[1] ?? "").length).toBeLessThanOrEqual(63);
   });
+
+  it("emits a DbObservationEvent per query when emit.client is set", async () => {
+    const fakeConn = {
+      query: async (sql: string): Promise<{ rows: unknown[]; rowCount: number }> => {
+        // Tiny delay so hrtime diff is nonzero + crosses 0ms threshold.
+        await new Promise((r) => setTimeout(r, 5));
+        return { rows: [], rowCount: 0 };
+      },
+    };
+    const fakeKnex = {
+      client: {
+        driverName: "pg",
+        acquireRawConnection: () => Promise.resolve(fakeConn),
+      },
+    };
+    const sent: unknown[] = [];
+    const client = {
+      sendBatch: async (events: unknown[]): Promise<void> => {
+        sent.push(...events);
+      },
+    };
+
+    instrumentKnex(fakeKnex, {
+      emit: { client, slowThresholdMs: 0 },
+    });
+
+    const conn = await fakeKnex.client.acquireRawConnection();
+    await runWithEvent(
+      { eventId: "ev_emit1" },
+      () =>
+        (conn as typeof fakeConn).query(
+          "SELECT * FROM leads WHERE id = 42",
+        ),
+    );
+
+    expect(sent.length).toBe(1);
+    const event = sent[0] as {
+      id: string;
+      adapter: string;
+      db: { causedByEventId: string; queryFingerprint: string; queryText: string };
+    };
+    expect(event.id).toBe("ev_emit1");
+    expect(event.adapter).toBe("db.knex");
+    expect(event.db.causedByEventId).toBe("ev_emit1");
+    expect(event.db.queryFingerprint).toBe("SELECT * FROM leads WHERE id = ?");
+    expect(event.db.queryText).toContain("SELECT * FROM leads");
+  });
+
+  it("respects emit.slowThresholdMs — fast queries are dropped", async () => {
+    const fakeConn = {
+      query: async (_sql: string): Promise<{ rows: unknown[] }> => ({ rows: [] }),
+    };
+    const fakeKnex = {
+      client: {
+        driverName: "pg",
+        acquireRawConnection: () => Promise.resolve(fakeConn),
+      },
+    };
+    const sent: unknown[] = [];
+    const client = {
+      sendBatch: async (events: unknown[]): Promise<void> => {
+        sent.push(...events);
+      },
+    };
+
+    instrumentKnex(fakeKnex, {
+      emit: { client, slowThresholdMs: 500 },
+    });
+
+    const conn = await fakeKnex.client.acquireRawConnection();
+    await runWithEvent({ eventId: "ev_fast" }, () =>
+      (conn as typeof fakeConn).query("SELECT 1"),
+    );
+
+    expect(sent.length).toBe(0);
+  });
+
+  it("drops emitted observations when no event scope is active", async () => {
+    const fakeConn = {
+      query: async (_sql: string): Promise<{ rows: unknown[] }> => ({ rows: [] }),
+    };
+    const fakeKnex = {
+      client: {
+        driverName: "pg",
+        acquireRawConnection: () => Promise.resolve(fakeConn),
+      },
+    };
+    const sent: unknown[] = [];
+    const client = {
+      sendBatch: async (events: unknown[]): Promise<void> => {
+        sent.push(...events);
+      },
+    };
+
+    instrumentKnex(fakeKnex, { emit: { client, slowThresholdMs: 0 } });
+
+    const conn = await fakeKnex.client.acquireRawConnection();
+    // No runWithEvent wrapping — should not emit even with threshold 0.
+    await (conn as typeof fakeConn).query("SELECT 1");
+    expect(sent.length).toBe(0);
+  });
 });

@@ -30,23 +30,11 @@
  * ```
  */
 
-import { currentEventId } from "../core/event-context.js";
-import type {
-  BlobRef,
-  DbObservationEvent as PbDbObs,
-  Event as PbEvent,
-} from "../generated/clearvoiance/v1/event.js";
-import { DbObservationEvent_DbObservationType as DbObsType } from "../generated/clearvoiance/v1/event.js";
-import { SDK_VERSION } from "../version.js";
+import { emitDbObservation, type EventSink } from "./emit.js";
 
 const ADAPTER_NAME = "db.mongoose";
 
-/** Minimal client contract this adapter needs. Mirrors the cron adapter's. */
-export interface EventSink {
-  sendBatch(events: PbEvent[]): Promise<void>;
-  uploadBlob?(data: Buffer, opts?: { contentType?: string }): Promise<BlobRef>;
-  track?<T>(p: Promise<T>): Promise<T>;
-}
+export type { EventSink };
 
 export interface InstrumentMongooseOptions {
   /**
@@ -101,7 +89,6 @@ interface QueryContextLike {
   // Internal scratchpad we stash start time on. Mongoose allows
   // arbitrary assignments to `this` inside middleware.
   _clvStartNs?: bigint;
-  _clvEventId?: string;
   // getQuery / getOptions are stable across mongoose 6-8.
   getQuery?: () => unknown;
   getOptions?: () => Record<string, unknown>;
@@ -139,14 +126,13 @@ export function instrumentMongoose(
   opts: InstrumentMongooseOptions = {},
 ): InstrumentMongooseHandle {
   const m = mongoose as MongooseLike;
-  const prefix = opts.appPrefix ?? "clv:";
-  const replayId = opts.replayId ?? "";
-  const thresholdNs =
-    BigInt(Math.max(0, Math.floor(opts.slowThresholdMs ?? 0))) * 1_000_000n;
-  const onError = opts.onError ?? defaultOnError;
-
-  const appNameFor = (eventId: string): string =>
-    replayId ? `${prefix}${replayId}:${eventId}` : `${prefix}${eventId}`;
+  const emit = {
+    client,
+    slowThresholdMs: opts.slowThresholdMs ?? 0,
+    replayId: opts.replayId,
+    appPrefix: opts.appPrefix,
+    onError: opts.onError ?? defaultOnError,
+  };
 
   const plugin = (schemaRaw: unknown): void => {
     const schema = schemaRaw as SchemaLike;
@@ -158,58 +144,23 @@ export function instrumentMongoose(
 
   function preHook(this: QueryContextLike, next?: () => void): void {
     this._clvStartNs = process.hrtime.bigint();
-    this._clvEventId = currentEventId();
     next?.();
   }
 
   function postHook(this: QueryContextLike): void {
-    try {
-      if (this._clvStartNs === undefined) return;
-      const eventId = this._clvEventId;
-      // No active capture scope → nothing to correlate to. Drop.
-      if (!eventId) return;
-
-      const durationNs = process.hrtime.bigint() - this._clvStartNs;
-      if (durationNs < thresholdNs) return;
-
-      const opName = this.op ?? "save";
-      const modelName =
-        this.model?.modelName ?? this.constructor?.modelName ?? "(unknown)";
-
-      // query_text keeps the operation signature. Full query payloads
-      // can be PII-heavy; we stay short + structured on purpose.
-      const queryText = describeOp(opName, modelName, this);
-      const fingerprint = `${modelName}.${opName}`;
-
-      const dbObs: PbDbObs = {
-        queryFingerprint: fingerprint,
-        queryText,
-        durationNs,
-        rowsAffected: 0n,
-        applicationName: appNameFor(eventId),
-        causedByEventId: eventId,
-        observationType: DbObsType.DB_OBSERVATION_TYPE_SLOW_QUERY,
-        explainPlan: "",
-        locks: [],
-      };
-
-      const event: PbEvent = {
-        id: eventId,
-        sessionId: "",
-        timestampNs: BigInt(Date.now()) * 1_000_000n - durationNs,
-        offsetNs: 0n,
-        adapter: ADAPTER_NAME,
-        sdkVersion: `@clearvoiance/node@${SDK_VERSION}`,
-        metadata: { mongoose_op: opName, model: modelName },
-        redactionsApplied: [],
-        db: dbObs,
-      };
-
-      const task = client.sendBatch([event]).catch(onError);
-      if (client.track) void client.track(task);
-    } catch (err) {
-      onError(err);
-    }
+    if (this._clvStartNs === undefined) return;
+    const opName = this.op ?? "save";
+    const modelName =
+      this.model?.modelName ?? this.constructor?.modelName ?? "(unknown)";
+    const fingerprint = `${modelName}.${opName}`;
+    emitDbObservation(emit, {
+      adapter: ADAPTER_NAME,
+      startNs: this._clvStartNs,
+      endNs: process.hrtime.bigint(),
+      queryText: describeOp(opName, modelName, this),
+      fingerprint,
+      metadata: { mongoose_op: opName, model: modelName },
+    });
   }
 
   m.plugin(plugin);

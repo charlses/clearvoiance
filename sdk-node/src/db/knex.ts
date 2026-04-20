@@ -27,11 +27,14 @@
  * hook. Strapi 4 exposes the knex instance as `strapi.db.connection`.
  */
 
+import type { EmitConfig } from "./emit.js";
 import {
   makeAppNameBuilder,
   wrapPgClientWithAppName,
   type PgClientLike,
 } from "./pg-wrap.js";
+
+const ADAPTER_NAME = "db.knex";
 
 export interface InstrumentKnexOptions {
   /**
@@ -44,6 +47,12 @@ export interface InstrumentKnexOptions {
   appPrefix?: string;
   /** Called on any SET-statement failure. Defaults to silent. */
   onError?: (err: unknown) => void;
+  /**
+   * Enable SDK-side per-query DbObservationEvent emission. When set,
+   * every query crossing `emit.slowThresholdMs` streams through the
+   * SDK client — complementary to the out-of-process db-observer.
+   */
+  emit?: Omit<EmitConfig, "client"> & { client: EmitConfig["client"] };
 }
 
 export interface InstrumentKnexHandle {
@@ -98,6 +107,10 @@ export function instrumentKnex(
 
   const appNameFor = makeAppNameBuilder(opts);
   const onError = opts.onError;
+  const emit = opts.emit
+    ? { ...opts.emit, adapter: ADAPTER_NAME }
+    : undefined;
+  const wrapOpts = { appNameFor, onError, emit };
 
   // Wrap the factory: every new connection knex mints gets its .query
   // method patched with the application_name prefix.
@@ -105,7 +118,7 @@ export function instrumentKnex(
   const patchedAcquire = async function (this: KnexClientLike, ...args: unknown[]): Promise<unknown> {
     const conn = await originalAcquire.apply(this, args);
     if (conn && typeof (conn as PgClientLike).query === "function") {
-      wrapPgClientWithAppName(conn as PgClientLike, { appNameFor, onError });
+      wrapPgClientWithAppName(conn as PgClientLike, wrapOpts);
     }
     return conn;
   };
@@ -115,7 +128,7 @@ export function instrumentKnex(
   // called. This matters when instrumentKnex runs after Strapi's first
   // query on boot — without this, the initial pool connections slip
   // through unwrapped until they're recycled.
-  wrapExistingPoolConnections(k.client, { appNameFor, onError });
+  wrapExistingPoolConnections(k.client, wrapOpts);
 
   return {
     uninstall(): void {
@@ -132,10 +145,7 @@ function isPostgresDriver(name: string): boolean {
 
 function wrapExistingPoolConnections(
   client: KnexClientLike,
-  wrapOpts: {
-    appNameFor: (eventId: string) => string;
-    onError?: (err: unknown) => void;
-  },
+  wrapOpts: Parameters<typeof wrapPgClientWithAppName>[1],
 ): void {
   const pool = client.pool;
   if (!pool) return;

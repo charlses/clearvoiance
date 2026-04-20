@@ -22,6 +22,9 @@
  */
 
 import { currentEventId } from "../core/event-context.js";
+import { emitDbObservation, type EmitConfig } from "./emit.js";
+
+const ADAPTER_NAME = "db.prisma";
 
 /** Options for the Prisma wrapper. */
 export interface InstrumentPrismaOptions {
@@ -31,6 +34,12 @@ export interface InstrumentPrismaOptions {
   appPrefix?: string;
   /** Called when the SET fails so it can be audited without crashing queries. */
   onError?: (err: unknown) => void;
+  /**
+   * Enable SDK-side per-query DbObservationEvent emission. Every operation
+   * crossing `emit.slowThresholdMs` streams through the SDK client with
+   * the originating event id attached. Complementary to the db-observer.
+   */
+  emit?: Omit<EmitConfig, "client"> & { client: EmitConfig["client"] };
 }
 
 // Narrow shape we need from a Prisma client — keeps Prisma as a pure peer dep.
@@ -50,6 +59,9 @@ export function instrumentPrisma<T extends PrismaLike>(
   const prefix = opts.appPrefix ?? "clv:";
   const replayId = opts.replayId ?? "";
   const onError = opts.onError ?? ((): void => {});
+  const emit = opts.emit
+    ? { ...opts.emit, adapter: ADAPTER_NAME }
+    : undefined;
 
   const appNameFor = (eventId: string): string => {
     const raw = replayId ? `${prefix}${replayId}:${eventId}` : `${prefix}${eventId}`;
@@ -59,9 +71,13 @@ export function instrumentPrisma<T extends PrismaLike>(
   return prisma.$extends({
     query: {
       $allOperations: async ({
+        model,
+        operation,
         args,
         query,
       }: {
+        model?: string;
+        operation?: string;
         args: unknown;
         query: (args: unknown) => Promise<unknown>;
       }) => {
@@ -73,7 +89,39 @@ export function instrumentPrisma<T extends PrismaLike>(
         } catch (err) {
           onError(err);
         }
-        return query(args);
+        if (!emit) return query(args);
+
+        const fingerprint = `${model ?? "(raw)"}.${operation ?? "?"}`;
+        const startNs = process.hrtime.bigint();
+        try {
+          const res = await query(args);
+          emitDbObservation(emit, {
+            adapter: ADAPTER_NAME,
+            startNs,
+            endNs: process.hrtime.bigint(),
+            queryText: fingerprint,
+            fingerprint,
+            metadata: {
+              prisma_op: operation ?? "",
+              prisma_model: model ?? "",
+            },
+          });
+          return res;
+        } catch (err) {
+          emitDbObservation(emit, {
+            adapter: ADAPTER_NAME,
+            startNs,
+            endNs: process.hrtime.bigint(),
+            queryText: fingerprint,
+            fingerprint,
+            metadata: {
+              prisma_op: operation ?? "",
+              prisma_model: model ?? "",
+              status: "error",
+            },
+          });
+          throw err;
+        }
       },
     },
   }) as T;

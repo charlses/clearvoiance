@@ -14,6 +14,8 @@
  */
 
 import { currentEventId } from "../core/event-context.js";
+import { emitDbObservation, type EmitConfig } from "./emit.js";
+import { sqlFingerprint } from "./sql-fingerprint.js";
 
 /** Minimal pg.Client shape we need; a typeof dance to avoid pulling `pg` into our type graph. */
 export interface PgClientLike {
@@ -25,6 +27,13 @@ export interface WrapOptions {
   appNameFor: (eventId: string) => string;
   /** Called on any SET-statement failure. Defaults to silent. */
   onError?: (err: unknown) => void;
+  /**
+   * Optional: enable SDK-side per-query DbObservationEvent emission.
+   * When set, every query on this client that crosses `emit.slowThresholdMs`
+   * becomes a DbObservationEvent streamed through `emit.client.sendBatch`.
+   * Independent of observer-based correlation — you can run both.
+   */
+  emit?: EmitConfig & { adapter: string };
 }
 
 /**
@@ -54,28 +63,38 @@ export function wrapPgClientWithAppName(
   // we only re-SET when the current event id differs.
   let lastPinned: string | undefined;
 
+  const emit = opts.emit;
+
   const patched = function patchedQuery(this: unknown, ...args: unknown[]): unknown {
     const eventId = currentEventId();
-    if (!eventId) return orig(...args);
-    if (eventId === lastPinned) return orig(...args);
+    const needsSet = eventId !== undefined && eventId !== lastPinned;
 
-    const appName = opts.appNameFor(eventId).replace(/'/g, "''");
-    const setSQL = `SET application_name = '${appName}'`;
+    // Fast path: no scope change and no emit → zero-overhead passthrough.
+    if (!needsSet && !emit) return orig(...args);
+
+    const appName = eventId ? opts.appNameFor(eventId).replace(/'/g, "''") : "";
+    const setSQL = appName ? `SET application_name = '${appName}'` : "";
     const isCallbackMode =
       args.length > 0 && typeof args[args.length - 1] === "function";
+
+    // Pull out the SQL string (first arg is text or a config object with .text).
+    const sqlText = extractSqlText(args[0]);
 
     if (isCallbackMode) {
       // Callback mode — used by pool.query() and some older client code.
       const userCb = args[args.length - 1] as (err: unknown, res: unknown) => void;
       const userArgs = args.slice(0, -1);
+      const wrappedCb = emit
+        ? wrapCallbackForEmit(userCb, sqlText, emit)
+        : userCb;
       Promise.resolve()
-        .then(() => orig(setSQL))
+        .then(() => (needsSet ? orig(setSQL) : undefined))
         .then(() => {
-          lastPinned = eventId;
+          if (needsSet) lastPinned = eventId;
         })
         .catch((err) => onError(err))
         .then(() => {
-          orig(...userArgs, userCb);
+          orig(...userArgs, wrappedCb);
         });
       return undefined;
     }
@@ -86,15 +105,44 @@ export function wrapPgClientWithAppName(
     // event scope changes (first query per new connection or scope
     // flip), not per query.
     return (async () => {
-      try {
-        await orig(setSQL);
-        lastPinned = eventId;
-      } catch (err) {
-        onError(err);
-        // Fall through and run the user query even if SET failed —
-        // correctness of the user's work beats capture fidelity.
+      if (needsSet) {
+        try {
+          await orig(setSQL);
+          lastPinned = eventId;
+        } catch (err) {
+          onError(err);
+          // Fall through and run the user query even if SET failed —
+          // correctness of the user's work beats capture fidelity.
+        }
       }
-      return orig(...args);
+      if (!emit) return orig(...args);
+
+      const startNs = process.hrtime.bigint();
+      try {
+        const res = await orig(...args);
+        emitDbObservation(emit, {
+          adapter: emit.adapter,
+          startNs,
+          endNs: process.hrtime.bigint(),
+          queryText: truncate(sqlText, 1000),
+          fingerprint: sqlFingerprint(sqlText),
+          rowsAffected: rowsAffectedFromPgResult(res),
+        });
+        return res;
+      } catch (err) {
+        // Re-throw the original error — emission failure shouldn't swallow
+        // the user's DB error. We still emit so failed-slow queries are
+        // visible in the dashboard.
+        emitDbObservation(emit, {
+          adapter: emit.adapter,
+          startNs,
+          endNs: process.hrtime.bigint(),
+          queryText: truncate(sqlText, 1000),
+          fingerprint: sqlFingerprint(sqlText),
+          metadata: { status: "error" },
+        });
+        throw err;
+      }
     })();
   };
 
@@ -117,5 +165,48 @@ export function makeAppNameBuilder(opts: {
   return (eventId: string): string => {
     const raw = replayId ? `${prefix}${replayId}:${eventId}` : `${prefix}${eventId}`;
     return raw.length > 63 ? raw.slice(0, 63) : raw;
+  };
+}
+
+function extractSqlText(firstArg: unknown): string {
+  if (typeof firstArg === "string") return firstArg;
+  if (firstArg && typeof firstArg === "object") {
+    const obj = firstArg as { text?: unknown; name?: unknown };
+    if (typeof obj.text === "string") return obj.text;
+    if (typeof obj.name === "string") return obj.name;
+  }
+  return "";
+}
+
+function rowsAffectedFromPgResult(res: unknown): bigint | undefined {
+  if (!res || typeof res !== "object") return undefined;
+  const r = res as { rowCount?: unknown };
+  if (typeof r.rowCount === "number" && Number.isFinite(r.rowCount)) {
+    return BigInt(r.rowCount);
+  }
+  return undefined;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max);
+}
+
+function wrapCallbackForEmit(
+  userCb: (err: unknown, res: unknown) => void,
+  sqlText: string,
+  emit: EmitConfig & { adapter: string },
+): (err: unknown, res: unknown) => void {
+  const startNs = process.hrtime.bigint();
+  return (err: unknown, res: unknown): void => {
+    emitDbObservation(emit, {
+      adapter: emit.adapter,
+      startNs,
+      endNs: process.hrtime.bigint(),
+      queryText: truncate(sqlText, 1000),
+      fingerprint: sqlFingerprint(sqlText),
+      rowsAffected: rowsAffectedFromPgResult(res),
+      metadata: err ? { status: "error" } : undefined,
+    });
+    userCb(err, res);
   };
 }

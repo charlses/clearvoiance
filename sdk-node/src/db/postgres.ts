@@ -23,11 +23,14 @@
  * on the same connection, so the next event's SET cleanly overwrites it.
  */
 
+import type { EmitConfig } from "./emit.js";
 import {
   makeAppNameBuilder,
   wrapPgClientWithAppName,
   type PgClientLike,
 } from "./pg-wrap.js";
+
+const ADAPTER_NAME = "db.postgres";
 
 /**
  * Minimal shape we need from a pg.Pool instance. Deliberately narrow so
@@ -50,6 +53,14 @@ export interface InstrumentPgOptions {
   appPrefix?: string;
   /** Called on any SET-statement failure. Defaults to silent. */
   onError?: (err: unknown) => void;
+  /**
+   * Enable SDK-side per-query DbObservationEvent emission. When set,
+   * every query crossing `emit.slowThresholdMs` streams through the
+   * SDK client as an observation carrying the originating event id.
+   * Complementary to the out-of-process db-observer — you can run both.
+   * Leave unset to stay fully observer-driven (zero per-query overhead).
+   */
+  emit?: Omit<EmitConfig, "client"> & { client: EmitConfig["client"] };
 }
 
 export interface InstrumentPgHandle {
@@ -69,9 +80,12 @@ export function instrumentPg(
   const p = pool as PgPoolLike;
   const appNameFor = makeAppNameBuilder(opts);
   const onError = opts.onError;
+  const emit = opts.emit
+    ? { ...opts.emit, adapter: ADAPTER_NAME }
+    : undefined;
 
   const onConnect = (client: PgClientLike): void => {
-    wrapPgClientWithAppName(client, { appNameFor, onError });
+    wrapPgClientWithAppName(client, { appNameFor, onError, emit });
   };
 
   p.on("connect", onConnect);
