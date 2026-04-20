@@ -32,11 +32,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: regenerate proto bindings
-        uses: bufbuild/buf-action@v1.4.0
-        with:
-          version: 1.68.1
-          setup_only: true
+      - name: install buf 1.68.1
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL https://github.com/bufbuild/buf/releases/download/v1.68.1/buf-Linux-x86_64 \
+            -o "$HOME/.local/bin/buf"
+          chmod +x "$HOME/.local/bin/buf"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
       - run: buf generate
         working-directory: proto
 
