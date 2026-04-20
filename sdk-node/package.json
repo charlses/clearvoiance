@@ -1,6 +1,6 @@
 {
   "name": "@clearvoiance/node",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Node.js SDK for clearvoiance — capture traffic from your backend and replay it at N× speed.",
   "license": "Apache-2.0",
   "author": "Davit Tavadze",
@@ -227,27 +227,13 @@
     "@grpc/grpc-js": "^1.14.3"
   },
   "peerDependencies": {
-    "@prisma/client": ">=5",
-    "bullmq": ">=4",
     "express": ">=4",
-    "fastify": ">=4",
-    "knex": ">=2",
     "koa": ">=2",
-    "mongoose": ">=7",
-    "node-cron": ">=3",
-    "pg": ">=8",
     "socket.io": ">=4"
   },
   "peerDependenciesMeta": {
-    "@prisma/client": { "optional": true },
-    "bullmq": { "optional": true },
     "express": { "optional": true },
-    "fastify": { "optional": true },
-    "knex": { "optional": true },
     "koa": { "optional": true },
-    "mongoose": { "optional": true },
-    "node-cron": { "optional": true },
-    "pg": { "optional": true },
     "socket.io": { "optional": true }
   }
 }
