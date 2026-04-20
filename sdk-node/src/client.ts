@@ -426,14 +426,30 @@ export class Client {
   private markStreamFailed(err: unknown): void {
     this.streamHealthy = false;
     this.stream = null;
-    if (!this.shuttingDown) {
+    if (this.shuttingDown) return;
+
+    // In remote mode the engine is authoritative about session state. If it
+    // says the session is gone (FAILED_PRECONDITION) it was stopped from the
+    // dashboard, expired, or the engine restarted without us — either way
+    // there's nothing to reconnect to. Clear the session, cancel pending
+    // reconnect timers, and go back to idle waiting for the next
+    // StartCapture. Without this the SDK would retry `openStream(deadId)`
+    // forever on exponential backoff.
+    if (this.config.remote && isSessionGoneError(err)) {
+      this.session = null;
+      this.clearReconnect();
       // eslint-disable-next-line no-console
-      console.warn(
-        "[clearvoiance] stream unhealthy, failing over to WAL:",
-        (err as Error)?.message ?? String(err),
+      console.info(
+        "[clearvoiance] session ended (engine says inactive) — idling until next StartCapture",
       );
-      this.scheduleReconnect();
+      return;
     }
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[clearvoiance] stream unhealthy, failing over to WAL:",
+      (err as Error)?.message ?? String(err),
+    );
+    this.scheduleReconnect();
   }
 
   private async persistToWAL(batchId: bigint, events: Event[]): Promise<void> {
@@ -478,6 +494,17 @@ export class Client {
       console.info("[clearvoiance] stream reconnected, draining WAL");
       void this.drainWAL();
     } catch (err) {
+      // Same idle-on-dead-session guard as markStreamFailed — the engine
+      // just told us the session isn't coming back.
+      if (this.config.remote && isSessionGoneError(err)) {
+        this.session = null;
+        this.clearReconnect();
+        // eslint-disable-next-line no-console
+        console.info(
+          "[clearvoiance] reconnect aborted (session inactive) — idling until next StartCapture",
+        );
+        return;
+      }
       // eslint-disable-next-line no-console
       console.warn(
         "[clearvoiance] reconnect attempt failed:",
@@ -714,4 +741,22 @@ async function safeText(resp: Response): Promise<string> {
   } catch {
     return "<unreadable body>";
   }
+}
+
+/**
+ * Detects "this session is no longer attachable" from an error thrown by the
+ * capture stream or the reconnect RPC. Used so the SDK can go back to idle
+ * instead of hammering the engine with reattach attempts on a session the
+ * dashboard has already closed.
+ *
+ * grpc-js surfaces the status code as `.code` on the Error; we also fall
+ * back to a message scan because some transports wrap the error.
+ */
+function isSessionGoneError(err: unknown): boolean {
+  if (!err) return false;
+  const e = err as { code?: number | string; message?: string };
+  // @grpc/grpc-js uses numeric status codes; 9 is FAILED_PRECONDITION.
+  if (e.code === 9 || e.code === "FAILED_PRECONDITION") return true;
+  const msg = e.message ?? "";
+  return /session is not active|session (is )?inactive|no such session/i.test(msg);
 }
