@@ -340,14 +340,14 @@ function TimelinePanel({
           {events.length} events
         </div>
       </div>
-      <div className="flex h-32 items-end gap-0.5">
+      <div className="flex h-32 items-stretch gap-0.5">
         {buckets.map((b) => {
-          const height = maxP95 > 0 ? (b.p95 / maxP95) * 100 : 0;
+          const height = maxP95 > 0 ? Math.max((b.p95 / maxP95) * 100, 2) : 0;
           const errorBand = b.errorRate * 100;
           return (
             <div
               key={b.index}
-              className="group relative flex flex-1 flex-col-reverse"
+              className="group relative flex h-full flex-1 flex-col-reverse"
               title={`+${b.offsetSec.toFixed(1)}s · ${b.count} req · p95 ${nsToMs(b.p95)} · err ${(b.errorRate * 100).toFixed(0)}%`}
             >
               <div

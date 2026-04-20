@@ -1,13 +1,13 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { use } from "react";
+import { useMemo, useState, use } from "react";
 
 import { Card, CardTitle } from "@/components/ui/card";
 import { Code } from "@/components/ui/code";
 import { PageHeader } from "@/components/page-header";
 import { Table, TD, TH, THead, TRow } from "@/components/ui/table";
-import { api } from "@/lib/api";
+import { api, type RuntimePoint } from "@/lib/api";
 
 export default function ReplayDbPage({
   params,
@@ -15,6 +15,15 @@ export default function ReplayDbPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggle = (key: string): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   const topSlow = useQuery({
     queryKey: ["db-top-slow", id],
@@ -34,6 +43,11 @@ export default function ReplayDbPage({
   const runtime = useQuery({
     queryKey: ["runtime-summary", id],
     queryFn: () => api.runtimeSummary(id),
+    retry: 1,
+  });
+  const runtimeSamples = useQuery({
+    queryKey: ["runtime-samples", id],
+    queryFn: () => api.runtimeSamples(id),
     retry: 1,
   });
 
@@ -90,6 +104,9 @@ export default function ReplayDbPage({
                 hint={`${runtime.data.samples} samples`}
               />
             </div>
+            {runtimeSamples.data && runtimeSamples.data.points.length > 1 ? (
+              <RuntimeCharts points={runtimeSamples.data.points} />
+            ) : null}
           </section>
         ) : null}
 
@@ -99,6 +116,7 @@ export default function ReplayDbPage({
             <Table>
               <THead>
                 <TRow>
+                  <TH className="w-6"></TH>
                   <TH>Type</TH>
                   <TH>Fingerprint</TH>
                   <TH className="max-w-[360px]">Query</TH>
@@ -109,23 +127,66 @@ export default function ReplayDbPage({
                 </TRow>
               </THead>
               <tbody>
-                {topSlow.data.rows.map((r) => (
-                  <TRow key={r.query_fingerprint + r.observation_type}>
-                    <TD className="capitalize text-muted-foreground">
-                      {r.observation_type.replace("_", " ")}
-                    </TD>
-                    <TD className="font-mono text-xs">
-                      {r.query_fingerprint.slice(0, 10)}
-                    </TD>
-                    <TD className="max-w-[360px] truncate font-mono text-xs text-muted-foreground">
-                      {r.query_text}
-                    </TD>
-                    <TD className="text-right font-mono">{r.occurrences}</TD>
-                    <TD className="text-right font-mono">{r.avg_ms.toFixed(1)}</TD>
-                    <TD className="text-right font-mono">{r.p95_ms.toFixed(1)}</TD>
-                    <TD className="text-right font-mono">{r.max_ms.toFixed(1)}</TD>
-                  </TRow>
-                ))}
+                {topSlow.data.rows.map((r) => {
+                  const key = r.query_fingerprint + r.observation_type;
+                  const open = expanded.has(key);
+                  return (
+                    <>
+                      <TRow
+                        key={key}
+                        onClick={() => toggle(key)}
+                        className="cursor-pointer hover:bg-muted/40"
+                      >
+                        <TD className="text-muted-foreground">{open ? "▾" : "▸"}</TD>
+                        <TD className="capitalize text-muted-foreground">
+                          {r.observation_type.replace("_", " ")}
+                        </TD>
+                        <TD className="font-mono text-xs">
+                          {r.query_fingerprint.slice(0, 10)}
+                        </TD>
+                        <TD className="max-w-[360px] truncate font-mono text-xs text-muted-foreground">
+                          {r.query_text}
+                        </TD>
+                        <TD className="text-right font-mono">{r.occurrences}</TD>
+                        <TD className="text-right font-mono">{r.avg_ms.toFixed(1)}</TD>
+                        <TD className="text-right font-mono">{r.p95_ms.toFixed(1)}</TD>
+                        <TD className="text-right font-mono">{r.max_ms.toFixed(1)}</TD>
+                      </TRow>
+                      {open ? (
+                        <TRow key={`${key}-details`} className="bg-muted/20">
+                          <TD colSpan={8}>
+                            <div className="space-y-2 py-2">
+                              <div>
+                                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                  Full query
+                                </p>
+                                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded border bg-background p-3 font-mono text-xs">
+                                  {r.query_text}
+                                </pre>
+                              </div>
+                              <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+                                <span>
+                                  Fingerprint{" "}
+                                  <span className="font-mono">{r.query_fingerprint}</span>
+                                </span>
+                                <span>
+                                  First example event{" "}
+                                  <span className="font-mono">{r.event_id}</span>
+                                </span>
+                                <span>
+                                  First observed{" "}
+                                  <span className="font-mono">
+                                    {new Date(r.first_observed_at).toLocaleString()}
+                                  </span>
+                                </span>
+                              </div>
+                            </div>
+                          </TD>
+                        </TRow>
+                      ) : null}
+                    </>
+                  );
+                })}
               </tbody>
             </Table>
           ) : (
@@ -243,4 +304,125 @@ function formatBytes(bytes: number): string {
     u += 1;
   }
   return `${v.toFixed(v >= 10 ? 0 : 1)} ${units[u]}`;
+}
+
+/**
+ * Three stacked sparklines from the per-tick runtime samples: RSS (bytes),
+ * event-loop p99 (ns), DB pool utilisation (%). Hand-rolled SVG so we don't
+ * pull a charting lib for one page.
+ */
+function RuntimeCharts({ points }: { points: RuntimePoint[] }): React.ReactElement {
+  const series = useMemo(() => {
+    const rss = points.map((p) => p.mem_rss);
+    const heap = points.map((p) => p.mem_heap_used);
+    const ell = points.map((p) => p.event_loop_p99_ns);
+    const poolPct = points.map((p) =>
+      p.db_pool_max > 0 ? (p.db_pool_used / p.db_pool_max) * 100 : 0,
+    );
+    const poolPending = points.map((p) => p.db_pool_pending);
+    return { rss, heap, ell, poolPct, poolPending };
+  }, [points]);
+
+  return (
+    <div className="mt-3 grid gap-3 lg:grid-cols-3">
+      <Chart
+        title="Memory (RSS / heap)"
+        unit="MB"
+        primary={series.rss}
+        secondary={series.heap}
+        primaryLabel="RSS"
+        secondaryLabel="heap used"
+        format={(v) => `${(v / 1024 / 1024).toFixed(0)} MB`}
+      />
+      <Chart
+        title="Event loop p99 lag"
+        unit="ms"
+        primary={series.ell}
+        primaryLabel="p99"
+        format={(v) => `${(v / 1e6).toFixed(1)} ms`}
+        warnThreshold={100_000_000}
+      />
+      <Chart
+        title="DB pool usage"
+        unit="%"
+        primary={series.poolPct}
+        secondary={series.poolPending.map((n) => Math.min(n * 10, 100))}
+        primaryLabel="used %"
+        secondaryLabel="pending (×10)"
+        format={(v) => `${v.toFixed(0)}%`}
+        warnThreshold={90}
+      />
+    </div>
+  );
+}
+
+function Chart({
+  title,
+  primary,
+  secondary,
+  primaryLabel,
+  secondaryLabel,
+  format,
+  warnThreshold,
+}: {
+  title: string;
+  unit: string;
+  primary: number[];
+  secondary?: number[];
+  primaryLabel: string;
+  secondaryLabel?: string;
+  format: (v: number) => string;
+  warnThreshold?: number;
+}): React.ReactElement {
+  const peak = Math.max(...primary, ...(secondary ?? [0]), 1);
+  const latest = primary[primary.length - 1] ?? 0;
+  const w = 100;
+  const h = 40;
+  const toPath = (vals: number[]): string => {
+    if (vals.length === 0) return "";
+    return vals
+      .map((v, i) => {
+        const x = (i / Math.max(vals.length - 1, 1)) * w;
+        const y = h - (v / peak) * h;
+        return `${i === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`;
+      })
+      .join(" ");
+  };
+  const warn = warnThreshold !== undefined && peak >= warnThreshold;
+
+  return (
+    <div className="rounded-md border bg-card p-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold">{title}</p>
+        <p
+          className={`font-mono text-xs ${warn ? "text-danger" : "text-muted-foreground"}`}
+        >
+          now {format(latest)} · peak {format(peak)}
+        </p>
+      </div>
+      <svg viewBox={`0 0 ${w} ${h}`} className="mt-2 h-16 w-full" preserveAspectRatio="none">
+        {secondary ? (
+          <path
+            d={toPath(secondary)}
+            fill="none"
+            stroke="currentColor"
+            strokeOpacity={0.35}
+            strokeWidth={0.8}
+            vectorEffect="non-scaling-stroke"
+          />
+        ) : null}
+        <path
+          d={toPath(primary)}
+          fill="none"
+          stroke={warn ? "var(--danger)" : "var(--accent)"}
+          strokeWidth={1.2}
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+      <p className="mt-1 text-[10px] text-muted-foreground">
+        {primaryLabel}
+        {secondaryLabel ? ` · ${secondaryLabel} (faint)` : ""}
+      </p>
+    </div>
+  );
 }
