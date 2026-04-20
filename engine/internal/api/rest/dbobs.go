@@ -78,14 +78,14 @@ func (h *dbObsHandler) topSlow(w http.ResponseWriter, r *http.Request) {
 	rows, err := conn.Query(r.Context(), `
 		SELECT
 		  observation_type,
-		  any(event_id),
+		  any(event_id)                                      AS event_id,
 		  query_fingerprint,
-		  any(query_text),
-		  count(),
-		  round(avg(duration_ns) / 1e6, 2),
-		  round(quantile(0.95)(duration_ns) / 1e6, 2),
-		  round(max(duration_ns) / 1e6, 2),
-		  fromUnixTimestamp64Nano(min(observed_at_ns))
+		  any(query_text)                                    AS query_text,
+		  count()                                            AS occurrences,
+		  round(avg(duration_ns) / 1e6, 2)                   AS avg_ms,
+		  round(quantile(0.95)(duration_ns) / 1e6, 2)        AS p95_ms,
+		  round(max(duration_ns) / 1e6, 2)                   AS max_ms,
+		  fromUnixTimestamp64Nano(min(observed_at_ns))       AS first_observed_at
 		FROM db_observations
 		WHERE replay_id = ?
 		GROUP BY observation_type, query_fingerprint
