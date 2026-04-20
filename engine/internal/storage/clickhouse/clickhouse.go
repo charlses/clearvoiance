@@ -130,7 +130,84 @@ func (s *Store) InsertBatch(ctx context.Context, sessionID string, events []*pb.
 		}
 	}
 
+	if err := batch.Send(); err != nil {
+		return err
+	}
+
+	// Side-channel: SDK-emitted DbObservation events also need to land
+	// in db_observations so the dashboard's /db page can see them
+	// alongside observer-emitted rows. Same shape either way.
+	return s.insertDbObservations(ctx, events)
+}
+
+// insertDbObservations appends a row to db_observations for every event
+// carrying a Db payload. replay_id is parsed out of the application_name
+// (same `clv:<replayId>:<eventId>` scheme the observer produces). Best-
+// effort: a failure here logs but doesn't fail the whole batch — the
+// events table got the row, so nothing's lost.
+func (s *Store) insertDbObservations(ctx context.Context, events []*pb.Event) error {
+	var dbEvents []*pb.Event
+	for _, ev := range events {
+		if ev.GetDb() != nil {
+			dbEvents = append(dbEvents, ev)
+		}
+	}
+	if len(dbEvents) == 0 {
+		return nil
+	}
+
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO db_observations")
+	if err != nil {
+		return fmt.Errorf("prepare db_observations batch: %w", err)
+	}
+	for _, ev := range dbEvents {
+		d := ev.GetDb()
+		replayID, _ := parseClvAppName(d.GetApplicationName())
+		if err := batch.Append(
+			ev.GetId(),                          // observation_id (reuse event id)
+			replayID,                            // replay_id
+			d.GetCausedByEventId(),              // event_id
+			observationTypeToString(d.GetObservationType()),
+			ev.GetTimestampNs(),                 // observed_at_ns
+			d.GetDurationNs(),
+			d.GetQueryText(),
+			d.GetQueryFingerprint(),
+			"",                                  // wait_event_type (SDK doesn't emit these)
+			"",                                  // wait_event
+		); err != nil {
+			return fmt.Errorf("append db_observation: %w", err)
+		}
+	}
 	return batch.Send()
+}
+
+// parseClvAppName pulls replay_id out of `clv:<replayId>:<eventId>`. Returns
+// empty strings if app_name doesn't match the expected format.
+func parseClvAppName(appName string) (replayID, eventID string) {
+	const prefix = "clv:"
+	if !strings.HasPrefix(appName, prefix) {
+		return "", ""
+	}
+	rest := appName[len(prefix):]
+	if colon := strings.Index(rest, ":"); colon >= 0 {
+		return rest[:colon], rest[colon+1:]
+	}
+	return "", rest
+}
+
+func observationTypeToString(t pb.DbObservationEvent_DbObservationType) string {
+	switch t {
+	case pb.DbObservationEvent_DB_OBSERVATION_TYPE_SLOW_QUERY:
+		return "slow_query"
+	case pb.DbObservationEvent_DB_OBSERVATION_TYPE_LOCK_WAIT:
+		return "lock_wait"
+	case pb.DbObservationEvent_DB_OBSERVATION_TYPE_DEADLOCK:
+		return "deadlock"
+	case pb.DbObservationEvent_DB_OBSERVATION_TYPE_LONG_TRANSACTION:
+		return "long_transaction"
+	default:
+		return "slow_query"
+	}
 }
 
 // ReadSession streams events for a session in chronological order. Callers

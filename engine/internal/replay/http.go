@@ -119,6 +119,9 @@ func (d *HTTPDispatcher) Dispatch(ctx context.Context, ev *pb.Event, target *Tar
 	// real traffic on the target.
 	req.Header.Set("User-Agent", "clearvoiance-replayer/0.1")
 	req.Header.Set("X-Clearvoiance-Event-Id", ev.GetId())
+	if target.ReplayID != "" {
+		req.Header.Set("X-Clearvoiance-Replay-Id", target.ReplayID)
+	}
 	if vu > 0 {
 		req.Header.Set("X-Clearvoiance-Vu", fmt.Sprintf("%d", vu))
 	}

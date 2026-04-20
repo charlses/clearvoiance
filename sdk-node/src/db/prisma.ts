@@ -21,7 +21,7 @@
  * startup before any queries fire.
  */
 
-import { currentEventId } from "../core/event-context.js";
+import { currentEventId, currentReplayId } from "../core/event-context.js";
 import { emitDbObservation, type EmitConfig } from "./emit.js";
 
 const ADAPTER_NAME = "db.prisma";
@@ -57,14 +57,17 @@ export function instrumentPrisma<T extends PrismaLike>(
   opts: InstrumentPrismaOptions = {},
 ): T {
   const prefix = opts.appPrefix ?? "clv:";
-  const replayId = opts.replayId ?? "";
+  const staticReplayId = opts.replayId ?? "";
   const onError = opts.onError ?? ((): void => {});
   const emit = opts.emit
     ? { ...opts.emit, adapter: ADAPTER_NAME }
     : undefined;
 
   const appNameFor = (eventId: string): string => {
-    const raw = replayId ? `${prefix}${replayId}:${eventId}` : `${prefix}${eventId}`;
+    const replayId = currentReplayId() ?? staticReplayId;
+    const raw = replayId
+      ? `${prefix}${replayId}:${eventId}`
+      : `${prefix}${eventId}`;
     return raw.length > 63 ? raw.slice(0, 63) : raw;
   };
 

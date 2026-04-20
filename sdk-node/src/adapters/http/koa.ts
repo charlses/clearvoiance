@@ -19,7 +19,7 @@
 
 import type { Context, Middleware, Next } from "koa";
 
-import { currentEventId, newEventId, runWithEvent } from "../../core/event-context.js";
+import { currentEventId, extractReplayId, newEventId, runWithEvent } from "../../core/event-context.js";
 import {
   CappedBuffer,
   finalizeBody,
@@ -71,6 +71,7 @@ export function captureKoa(client: EventSink, opts: CaptureKoaOptions = {}): Mid
     }
 
     const eventId = newEventId();
+    const replayId = extractReplayId(ctx.req.headers);
     const startHr = process.hrtime.bigint();
     const startWallNs = BigInt(Date.now()) * 1_000_000n;
 
@@ -132,7 +133,7 @@ export function captureKoa(client: EventSink, opts: CaptureKoaOptions = {}): Mid
       if (client.track) void client.track(task);
     });
 
-    await runWithEvent({ eventId }, () => next());
+    await runWithEvent({ eventId, replayId }, () => next());
   };
 }
 

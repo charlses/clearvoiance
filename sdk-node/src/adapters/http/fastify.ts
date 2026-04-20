@@ -19,7 +19,7 @@
  * ideally before any other plugins that tap Fastify lifecycle hooks.
  */
 
-import { currentEventId, newEventId, runWithEvent } from "../../core/event-context.js";
+import { currentEventId, extractReplayId, newEventId, runWithEvent } from "../../core/event-context.js";
 import {
   CappedBuffer,
   finalizeBody,
@@ -78,6 +78,7 @@ export interface CaptureFastifyOptions {
 // to ask users to register them. Keyed by the request object identity.
 interface RequestState {
   eventId: string;
+  replayId?: string;
   startHr: bigint;
   startWallNs: bigint;
   reqBuf: CappedBuffer;
@@ -114,6 +115,7 @@ export function registerCapture(
     }
     state.set(req, {
       eventId: newEventId(),
+      replayId: extractReplayId(req.headers),
       startHr: process.hrtime.bigint(),
       startWallNs: BigInt(Date.now()) * 1_000_000n,
       reqBuf: new CappedBuffer(bufferCap),
@@ -124,7 +126,8 @@ export function registerCapture(
     // Fastify's hook runs inside its own async context; runWithEvent(..., fn)
     // propagates the ctx for the rest of the request's async chain via
     // the done() callback.
-    runWithEvent({ eventId: state.get(req)!.eventId }, () => done());
+    const s = state.get(req)!;
+    runWithEvent({ eventId: s.eventId, replayId: s.replayId }, () => done());
   });
 
   fastify.addHook("preParsing", (req, _reply, payload, done) => {

@@ -22,7 +22,7 @@
 
 import type { NextFunction, Request, Response } from "express";
 
-import { currentEventId, newEventId, runWithEvent } from "../../core/event-context.js";
+import { currentEventId, extractReplayId, newEventId, runWithEvent } from "../../core/event-context.js";
 import {
   CappedBuffer,
   finalizeBody,
@@ -113,6 +113,7 @@ export function captureHttp(
     }
 
     const eventId = newEventId();
+    const replayId = extractReplayId(req.headers);
     const startHr = process.hrtime.bigint();
     const startWallNs = BigInt(Date.now()) * 1_000_000n;
 
@@ -178,7 +179,7 @@ export function captureHttp(
       if (client.track) void client.track(task);
     });
 
-    runWithEvent({ eventId }, () => next());
+    runWithEvent({ eventId, replayId }, () => next());
   };
 }
 

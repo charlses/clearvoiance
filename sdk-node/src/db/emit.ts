@@ -15,7 +15,10 @@
  * produced a row.
  */
 
-import { currentEventId as defaultCurrentEventId } from "../core/event-context.js";
+import {
+  currentEventId as defaultCurrentEventId,
+  currentReplayId as defaultCurrentReplayId,
+} from "../core/event-context.js";
 import type {
   BlobRef,
   DbObservationEvent as PbDbObs,
@@ -45,10 +48,13 @@ export interface EmitConfig {
    */
   slowThresholdMs?: number;
   /**
-   * Optional replay id. When set, `db.applicationName` becomes
-   * `clv:<replayId>:<eventId>` so the UI filters that scan by replay id
-   * see these SDK-emitted events alongside observer rows. Omit during
-   * capture — the SDK is not intrinsically aware of replay context.
+   * Static fallback replay id. Only used when the current request's
+   * EventContext has no replayId of its own. Set this when the whole
+   * process is dedicated to a replay (hermetic mode, CLEARVOIANCE_REPLAY_ID
+   * env). For the more common "replay against a live SUT also serving
+   * normal traffic" case, leave this undefined — the replay id comes
+   * in per-request via the X-Clearvoiance-Replay-Id header, which the
+   * HTTP adapters put on the EventContext.
    */
   replayId?: string;
   /** Default "clv:". Matches the observer convention. */
@@ -60,6 +66,8 @@ export interface EmitConfig {
    * default reads from AsyncLocalStorage via `currentEventId()`.
    */
   currentEventId?: () => string | undefined;
+  /** Same override for the replay id reader. Defaults to currentReplayId(). */
+  currentReplayId?: () => string | undefined;
 }
 
 /** What an adapter hands us to describe a single query. */
@@ -95,16 +103,26 @@ export function emitDbObservation(
   const onError = cfg.onError ?? defaultOnError;
   try {
     const eventIdSource = cfg.currentEventId ?? defaultCurrentEventId;
+    const replayIdSource = cfg.currentReplayId ?? defaultCurrentReplayId;
     const eventId = eventIdSource();
     if (!eventId) return;
+    // Request-scoped replayId (from X-Clearvoiance-Replay-Id header) wins
+    // over any static replayId in the config — that way a non-hermetic
+    // SUT serving both normal + replay traffic attributes each
+    // observation to the right cohort.
+    const replayId = replayIdSource() ?? cfg.replayId;
 
     const durationNs = input.endNs - input.startNs;
     const thresholdNs =
       BigInt(Math.max(0, Math.floor(cfg.slowThresholdMs ?? 0))) * 1_000_000n;
     if (durationNs < thresholdNs) return;
 
-    const appName = buildAppName(cfg, eventId);
+    const appName = buildAppName(cfg, eventId, replayId);
 
+    // replayId is encoded into applicationName as `clv:<replayId>:<eventId>`
+    // — same scheme the observer produces, so the engine's event-ingest
+    // path can derive it uniformly whether the row came from the observer
+    // or straight from the SDK.
     const dbObs: PbDbObs = {
       queryFingerprint: input.fingerprint,
       queryText: input.queryText,
@@ -136,10 +154,14 @@ export function emitDbObservation(
   }
 }
 
-function buildAppName(cfg: EmitConfig, eventId: string): string {
+function buildAppName(
+  cfg: EmitConfig,
+  eventId: string,
+  replayId: string | undefined,
+): string {
   const prefix = cfg.appPrefix ?? "clv:";
-  const replayId = cfg.replayId ?? "";
-  const raw = replayId ? `${prefix}${replayId}:${eventId}` : `${prefix}${eventId}`;
+  const r = replayId ?? "";
+  const raw = r ? `${prefix}${r}:${eventId}` : `${prefix}${eventId}`;
   return raw.length > 63 ? raw.slice(0, 63) : raw;
 }
 

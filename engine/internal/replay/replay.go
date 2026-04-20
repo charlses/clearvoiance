@@ -52,6 +52,10 @@ type TargetConfig struct {
 	// BlobRef bodies will be skipped by the dispatcher with a "blob:skipped"
 	// error row rather than sending an empty body.
 	BlobReader BlobReader
+	// ReplayID is stamped onto every dispatched request as
+	// `X-Clearvoiance-Replay-Id` so the SDK on the SUT can attribute
+	// captured DB observations back to this replay.
+	ReplayID string
 }
 
 // BlobReader is the minimal contract HTTP/Socket dispatchers need to fetch
@@ -348,6 +352,7 @@ func (e *Engine) run(ctx context.Context, cfg Config) (*summary, error) {
 		Auth:       auth,
 		Mutator:    mutator,
 		BlobReader: e.blobs,
+		ReplayID:   cfg.ReplayID,
 	}
 
 	vuCount := cfg.VirtualUsers

@@ -13,7 +13,7 @@
  * and defer the actual query rewriting here.
  */
 
-import { currentEventId } from "../core/event-context.js";
+import { currentEventId, currentReplayId } from "../core/event-context.js";
 import { emitDbObservation, type EmitConfig } from "./emit.js";
 import { sqlFingerprint } from "./sql-fingerprint.js";
 
@@ -23,8 +23,13 @@ export interface PgClientLike {
 }
 
 export interface WrapOptions {
-  /** Builds the application_name to SET for a given event id. */
-  appNameFor: (eventId: string) => string;
+  /**
+   * Builds the application_name to SET for the current (event, replay)
+   * pair. replayId is the request-scoped id pulled from the incoming
+   * X-Clearvoiance-Replay-Id header (undefined when the request isn't
+   * a replay or when no such header was set).
+   */
+  appNameFor: (eventId: string, replayId: string | undefined) => string;
   /** Called on any SET-statement failure. Defaults to silent. */
   onError?: (err: unknown) => void;
   /**
@@ -58,21 +63,28 @@ export function wrapPgClientWithAppName(
   const orig = client.query.bind(client);
   const onError = opts.onError ?? ((): void => {});
 
-  // Track the last event id pinned on this connection. SET is session-
-  // level so once set it persists across queries on the same client;
-  // we only re-SET when the current event id differs.
+  // Track the last (event, replay) pair pinned on this connection.
+  // SET is session-level so once set it persists across queries on the
+  // same client; we only re-SET when either id changes. We key off a
+  // compound string because replayId can toggle independently of
+  // eventId (e.g. first replay request then first normal request on
+  // the same recycled connection).
   let lastPinned: string | undefined;
 
   const emit = opts.emit;
 
   const patched = function patchedQuery(this: unknown, ...args: unknown[]): unknown {
     const eventId = currentEventId();
-    const needsSet = eventId !== undefined && eventId !== lastPinned;
+    const replayId = currentReplayId();
+    const pinKey = eventId ? `${replayId ?? ""}|${eventId}` : undefined;
+    const needsSet = pinKey !== undefined && pinKey !== lastPinned;
 
     // Fast path: no scope change and no emit → zero-overhead passthrough.
     if (!needsSet && !emit) return orig(...args);
 
-    const appName = eventId ? opts.appNameFor(eventId).replace(/'/g, "''") : "";
+    const appName = eventId
+      ? opts.appNameFor(eventId, replayId).replace(/'/g, "''")
+      : "";
     const setSQL = appName ? `SET application_name = '${appName}'` : "";
     const isCallbackMode =
       args.length > 0 && typeof args[args.length - 1] === "function";
@@ -90,7 +102,7 @@ export function wrapPgClientWithAppName(
       Promise.resolve()
         .then(() => (needsSet ? orig(setSQL) : undefined))
         .then(() => {
-          if (needsSet) lastPinned = eventId;
+          if (needsSet) lastPinned = pinKey;
         })
         .catch((err) => onError(err))
         .then(() => {
@@ -108,7 +120,7 @@ export function wrapPgClientWithAppName(
       if (needsSet) {
         try {
           await orig(setSQL);
-          lastPinned = eventId;
+          lastPinned = pinKey;
         } catch (err) {
           onError(err);
           // Fall through and run the user query even if SET failed —
@@ -158,12 +170,23 @@ export function wrapPgClientWithAppName(
  */
 export function makeAppNameBuilder(opts: {
   appPrefix?: string;
+  /**
+   * Static fallback replay id. Only used when the caller doesn't
+   * supply a per-request replayId (i.e. the SUT is dedicated to a
+   * replay via CLEARVOIANCE_REPLAY_ID env). For the more common
+   * "replay against a live SUT" case, the HTTP adapters put replayId
+   * on the EventContext per request and pg-wrap passes it in as the
+   * second arg — that wins over this static fallback.
+   */
   replayId?: string;
-}): (eventId: string) => string {
+}): (eventId: string, contextReplayId?: string) => string {
   const prefix = opts.appPrefix ?? "clv:";
-  const replayId = opts.replayId ?? "";
-  return (eventId: string): string => {
-    const raw = replayId ? `${prefix}${replayId}:${eventId}` : `${prefix}${eventId}`;
+  const fallback = opts.replayId ?? "";
+  return (eventId: string, contextReplayId?: string): string => {
+    const replayId = contextReplayId ?? fallback;
+    const raw = replayId
+      ? `${prefix}${replayId}:${eventId}`
+      : `${prefix}${eventId}`;
     return raw.length > 63 ? raw.slice(0, 63) : raw;
   };
 }
