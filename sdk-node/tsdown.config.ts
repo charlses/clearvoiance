@@ -10,6 +10,7 @@ export default defineConfig({
     "adapters/cron/node-cron": "src/adapters/cron/node-cron.ts",
     "outbound/index": "src/outbound/index.ts",
     "hermetic/index": "src/hermetic/index.ts",
+    "runtime/index": "src/runtime/index.ts",
     "db/postgres": "src/db/postgres.ts",
     "db/knex": "src/db/knex.ts",
     "db/prisma": "src/db/prisma.ts",

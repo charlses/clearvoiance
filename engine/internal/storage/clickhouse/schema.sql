@@ -68,6 +68,36 @@ PARTITION BY (replay_id)
 ORDER BY (replay_id, event_id, observed_at_ns)
 SETTINGS index_granularity = 8192;
 
+-- Per-process runtime samples emitted by the SDK's instrumentRuntime()
+-- sampler. Process-scoped (not request-scoped) — join against replay
+-- windows by session_id + sampled_at_ns BETWEEN replay.start, replay.end.
+CREATE TABLE IF NOT EXISTS runtime_samples (
+    sample_id             String,
+    session_id            String,
+    sampled_at_ns         Int64,
+    mem_rss               Int64,
+    mem_heap_used         Int64,
+    mem_heap_total        Int64,
+    mem_external          Int64,
+    mem_array_buffers     Int64,
+    cpu_user_us           Int64,
+    cpu_system_us         Int64,
+    event_loop_p50_ns     Int64,
+    event_loop_p99_ns     Int64,
+    event_loop_max_ns     Int64,
+    gc_count              Int32,
+    gc_total_pause_ns     Int64,
+    active_handles        Int32,
+    active_requests       Int32,
+    db_pool_used          Int32,
+    db_pool_free          Int32,
+    db_pool_pending       Int32,
+    db_pool_max           Int32
+) ENGINE = MergeTree()
+PARTITION BY (session_id)
+ORDER BY (session_id, sampled_at_ns)
+SETTINGS index_granularity = 8192;
+
 -- Per-event replay results. Written by the replay engine for every dispatched
 -- event so operators can slice latency/lag by endpoint, status, etc.
 CREATE TABLE IF NOT EXISTS replay_events (

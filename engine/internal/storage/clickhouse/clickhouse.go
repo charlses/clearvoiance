@@ -47,6 +47,41 @@ ORDER BY (replay_id, event_id, observed_at_ns)
 SETTINGS index_granularity = 8192;
 `
 
+// RuntimeSamplesSchema is the canonical CREATE TABLE for per-process
+// runtime samples produced by the SDK's instrumentRuntime() sampler
+// (memory / CPU / event-loop / GC / DB-pool snapshots).
+// Runtime samples are process-scoped, not request-scoped — they describe
+// the SUT's state at a point in time. The replay page joins by time
+// window against the replay's started_at/ended_at.
+const RuntimeSamplesSchema = `
+CREATE TABLE IF NOT EXISTS runtime_samples (
+    sample_id             String,
+    session_id            String,
+    sampled_at_ns         Int64,
+    mem_rss               Int64,
+    mem_heap_used         Int64,
+    mem_heap_total        Int64,
+    mem_external          Int64,
+    mem_array_buffers     Int64,
+    cpu_user_us           Int64,
+    cpu_system_us         Int64,
+    event_loop_p50_ns     Int64,
+    event_loop_p99_ns     Int64,
+    event_loop_max_ns     Int64,
+    gc_count              Int32,
+    gc_total_pause_ns     Int64,
+    active_handles        Int32,
+    active_requests       Int32,
+    db_pool_used          Int32,
+    db_pool_free          Int32,
+    db_pool_pending       Int32,
+    db_pool_max           Int32
+) ENGINE = MergeTree()
+PARTITION BY (session_id)
+ORDER BY (session_id, sampled_at_ns)
+SETTINGS index_granularity = 8192;
+`
+
 // Store persists events to ClickHouse.
 type Store struct {
 	conn driver.Conn
@@ -137,7 +172,13 @@ func (s *Store) InsertBatch(ctx context.Context, sessionID string, events []*pb.
 	// Side-channel: SDK-emitted DbObservation events also need to land
 	// in db_observations so the dashboard's /db page can see them
 	// alongside observer-emitted rows. Same shape either way.
-	return s.insertDbObservations(ctx, events)
+	if err := s.insertDbObservations(ctx, events); err != nil {
+		return err
+	}
+	// Same story for runtime samples — denormalise from the stream into
+	// the runtime_samples table so the /runtime view doesn't have to
+	// decode raw_pb on every request.
+	return s.insertRuntimeSamples(ctx, sessionID, events)
 }
 
 // insertDbObservations appends a row to db_observations for every event
@@ -176,6 +217,54 @@ func (s *Store) insertDbObservations(ctx context.Context, events []*pb.Event) er
 			"",                                  // wait_event
 		); err != nil {
 			return fmt.Errorf("append db_observation: %w", err)
+		}
+	}
+	return batch.Send()
+}
+
+// insertRuntimeSamples writes a row to runtime_samples for every event
+// carrying a RuntimeSample payload. Session id is threaded through from
+// the caller (matches how we scope events in the main events table).
+func (s *Store) insertRuntimeSamples(ctx context.Context, sessionID string, events []*pb.Event) error {
+	var samples []*pb.Event
+	for _, ev := range events {
+		if ev.GetRuntime() != nil {
+			samples = append(samples, ev)
+		}
+	}
+	if len(samples) == 0 {
+		return nil
+	}
+	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO runtime_samples")
+	if err != nil {
+		return fmt.Errorf("prepare runtime_samples batch: %w", err)
+	}
+	for _, ev := range samples {
+		r := ev.GetRuntime()
+		if err := batch.Append(
+			ev.GetId(),
+			sessionID,
+			ev.GetTimestampNs(),
+			r.GetMemRss(),
+			r.GetMemHeapUsed(),
+			r.GetMemHeapTotal(),
+			r.GetMemExternal(),
+			r.GetMemArrayBuffers(),
+			r.GetCpuUserUs(),
+			r.GetCpuSystemUs(),
+			r.GetEventLoopP50Ns(),
+			r.GetEventLoopP99Ns(),
+			r.GetEventLoopMaxNs(),
+			r.GetGcCount(),
+			r.GetGcTotalPauseNs(),
+			r.GetActiveHandles(),
+			r.GetActiveRequests(),
+			r.GetDbPoolUsed(),
+			r.GetDbPoolFree(),
+			r.GetDbPoolPending(),
+			r.GetDbPoolMax(),
+		); err != nil {
+			return fmt.Errorf("append runtime_sample: %w", err)
 		}
 	}
 	return batch.Send()
@@ -487,6 +576,8 @@ func flatten(sessionID string, ev *pb.Event, raw []byte) flatRow {
 	case *pb.Event_Db:
 		r.eventType = "db"
 		r.durationNs = p.Db.GetDurationNs()
+	case *pb.Event_Runtime:
+		r.eventType = "runtime"
 	default:
 		r.eventType = "unknown"
 	}

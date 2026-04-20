@@ -42,6 +42,7 @@ message Event {
     QueueEvent queue = 24;
     OutboundEvent outbound = 25;
     DbObservationEvent db = 26;
+    RuntimeSampleEvent runtime = 27;
   }
 }
 
@@ -143,6 +144,48 @@ message DbObservationEvent {
   DbObservationType observation_type = 7;
   string explain_plan = 8;
   repeated LockInfo locks = 9;
+}
+
+// RuntimeSampleEvent is a periodic snapshot of the SUT's runtime state —
+// memory, CPU, event-loop health, DB pool saturation. Emitted by the
+// SDK's instrumentRuntime() sampler at a fixed interval (default 1s).
+// Used to explain "why was this replay slow" at a level above individual
+// queries: pool saturation, memory pressure, event loop starvation.
+message RuntimeSampleEvent {
+  // Memory, bytes. Mirrors Node's process.memoryUsage() + v8 heap stats.
+  int64 mem_rss = 1;
+  int64 mem_heap_used = 2;
+  int64 mem_heap_total = 3;
+  int64 mem_external = 4;
+  int64 mem_array_buffers = 5;
+
+  // CPU microseconds consumed since the previous sample tick. Raw delta,
+  // UI converts to % using the sample interval.
+  int64 cpu_user_us = 10;
+  int64 cpu_system_us = 11;
+
+  // Event-loop lag stats (ns) sampled since the previous tick via
+  // perf_hooks.monitorEventLoopDelay(). p99 is the canonical "backend
+  // starved" indicator.
+  int64 event_loop_p50_ns = 20;
+  int64 event_loop_p99_ns = 21;
+  int64 event_loop_max_ns = 22;
+
+  // GC pauses observed since the previous tick (from PerformanceObserver).
+  int32 gc_count = 30;
+  int64 gc_total_pause_ns = 31;
+
+  // Live process handles + pending IO requests, useful for spotting
+  // leaks that pile up under replay load.
+  int32 active_handles = 40;
+  int32 active_requests = 41;
+
+  // DB pool snapshot. Only populated when instrumentRuntime receives
+  // a knexPool option. All zeros otherwise.
+  int32 db_pool_used = 50;
+  int32 db_pool_free = 51;
+  int32 db_pool_pending = 52;
+  int32 db_pool_max = 53;
 }
 
 message LockInfo {

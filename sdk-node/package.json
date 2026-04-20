@@ -1,6 +1,6 @@
 {
   "name": "@clearvoiance/node",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Node.js SDK for clearvoiance — capture traffic from your backend and replay it at N× speed.",
   "license": "Apache-2.0",
   "author": "Davit Tavadze",
@@ -97,6 +97,16 @@
       "require": {
         "types": "./dist/outbound/index.d.cts",
         "default": "./dist/outbound/index.cjs"
+      }
+    },
+    "./runtime": {
+      "import": {
+        "types": "./dist/runtime/index.d.mts",
+        "default": "./dist/runtime/index.mjs"
+      },
+      "require": {
+        "types": "./dist/runtime/index.d.cts",
+        "default": "./dist/runtime/index.cjs"
       }
     },
     "./hermetic": {

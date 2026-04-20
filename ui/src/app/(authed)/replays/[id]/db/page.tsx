@@ -31,6 +31,11 @@ export default function ReplayDbPage({
     queryFn: () => api.dbDeadlocks(id, 20),
     retry: 1,
   });
+  const runtime = useQuery({
+    queryKey: ["runtime-summary", id],
+    queryFn: () => api.runtimeSummary(id),
+    retry: 1,
+  });
 
   const unavailable =
     topSlow.error || byEndpoint.error || deadlocks.error ? true : false;
@@ -54,6 +59,38 @@ export default function ReplayDbPage({
               <Code>{"clv:<event_id>"}</Code> in <code>application_name</code>.
             </p>
           </Card>
+        ) : null}
+
+        {runtime.data && runtime.data.samples > 0 ? (
+          <section>
+            <h2 className="mb-2 text-sm font-semibold">Runtime</h2>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <StatCard
+                label="Peak RSS"
+                value={formatBytes(runtime.data.mem_rss_peak)}
+                hint={`min ${formatBytes(runtime.data.mem_rss_min)}`}
+              />
+              <StatCard
+                label="Event loop p99 peak"
+                value={`${runtime.data.event_loop_p99_peak_ms.toFixed(1)} ms`}
+                hint={runtime.data.event_loop_p99_peak_ms > 100 ? "starved" : "healthy"}
+              />
+              <StatCard
+                label="Pool saturated"
+                value={`${runtime.data.pool_saturated_sec.toFixed(1)} s`}
+                hint={
+                  runtime.data.pool_max > 0
+                    ? `max ${runtime.data.pool_max} conns`
+                    : "pool stats unavailable"
+                }
+              />
+              <StatCard
+                label="GC pause total"
+                value={`${runtime.data.gc_total_pause_ms.toFixed(0)} ms`}
+                hint={`${runtime.data.samples} samples`}
+              />
+            </div>
+          </section>
         ) : null}
 
         <section>
@@ -174,4 +211,36 @@ export default function ReplayDbPage({
       </div>
     </>
   );
+}
+
+function StatCard({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <div className="rounded-md border bg-card px-3 py-2">
+      <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="mt-1 font-mono text-lg">{value}</p>
+      {hint ? (
+        <p className="text-xs text-muted-foreground">{hint}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (!bytes) return "—";
+  const units = ["B", "KB", "MB", "GB"];
+  let v = bytes;
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u += 1;
+  }
+  return `${v.toFixed(v >= 10 ? 0 : 1)} ${units[u]}`;
 }

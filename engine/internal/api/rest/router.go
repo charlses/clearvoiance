@@ -101,6 +101,7 @@ func Router(d Deps) http.Handler {
 			mountReplays(r, d)
 			mountAPIKeys(r, d)
 			mountDbObservations(r, d)
+			mountRuntime(r, d)
 			mountMonitors(r, d)
 		})
 	})

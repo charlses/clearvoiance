@@ -228,6 +228,14 @@ export const api = {
       `/api/v1/replays/${replayID}/db/deadlocks?limit=${limit}`,
     ),
 
+  // --- Runtime (memory/CPU/event-loop/pool) -----------------------------
+  runtimeSummary: (replayID: string) =>
+    req<RuntimeSummary>(`/api/v1/replays/${replayID}/runtime/summary`),
+  runtimeSamples: (replayID: string) =>
+    req<{ replay_id: string; points: RuntimePoint[] }>(
+      `/api/v1/replays/${replayID}/runtime`,
+    ),
+
   // --- API keys ---------------------------------------------------------
   listAPIKeys: () => req<{ keys: APIKey[]; count: number }>(`/api/v1/api-keys`),
   createAPIKey: (name: string) =>
@@ -365,6 +373,38 @@ export interface DbLockWaitRow {
   max_ms: number;
   wait_event_type: string;
   wait_event: string;
+}
+
+export interface RuntimeSummary {
+  samples: number;
+  window_start_ns: number;
+  window_end_ns: number;
+  mem_rss_peak: number;
+  mem_rss_min: number;
+  event_loop_p99_peak_ms: number;
+  pool_saturated_sec: number;
+  pool_max: number;
+  gc_total_pause_ms: number;
+}
+
+export interface RuntimePoint {
+  sampled_at: string;
+  mem_rss: number;
+  mem_heap_used: number;
+  mem_heap_total: number;
+  event_loop_p50_ns: number;
+  event_loop_p99_ns: number;
+  event_loop_max_ns: number;
+  gc_count: number;
+  gc_total_pause_ns: number;
+  cpu_user_us: number;
+  cpu_system_us: number;
+  active_handles: number;
+  active_requests: number;
+  db_pool_used: number;
+  db_pool_free: number;
+  db_pool_pending: number;
+  db_pool_max: number;
 }
 
 export interface ConfigView {
