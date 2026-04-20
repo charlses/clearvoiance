@@ -48,9 +48,27 @@ pnpm add @clearvoiance/node
 # or: yarn add @clearvoiance/node
 ```
 
-All framework integrations (Express, Koa, Strapi, Fastify, Socket.io,
-node-cron, BullMQ, pg, Knex, Prisma, Mongoose) are optional peer
-dependencies — install only the ones you actually use.
+All framework integrations are **optional peer dependencies** — the
+SDK never imports them at runtime, install only the adapters you use.
+
+| Adapter                                | Peer                |
+| -------------------------------------- | ------------------- |
+| `@clearvoiance/node/http/express`      | `express >= 4`      |
+| `@clearvoiance/node/http/koa`          | `koa >= 2`          |
+| `@clearvoiance/node/http/strapi`       | `koa >= 2`          |
+| `@clearvoiance/node/http/fastify`      | `fastify >= 4`      |
+| `@clearvoiance/node/socket/socketio`   | `socket.io >= 4`    |
+| `@clearvoiance/node/cron/node-cron`    | `node-cron >= 3`    |
+| `@clearvoiance/node/queue/bullmq`      | `bullmq >= 4`       |
+| `@clearvoiance/node/db/postgres`       | `pg >= 8`           |
+| `@clearvoiance/node/db/knex`           | `knex >= 2`         |
+| `@clearvoiance/node/db/prisma`         | `@prisma/client >=5`|
+| `@clearvoiance/node/db/mongoose`       | `mongoose >= 7`     |
+
+All declared via `peerDependenciesMeta.optional`, so installing the
+SDK never forces an unused framework into your dep tree. The SDK is
+also marked `sideEffects: false` — tree-shakers can safely drop any
+adapter subpath you don't import.
 
 ## Getting an API key
 
