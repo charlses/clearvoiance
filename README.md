@@ -1,8 +1,29 @@
 # clearvoiance
 
-> Reproducible, time-compressed traffic replay for stress testing real systems.
+> **Record real production traffic and replay it safely at N× speed.**
+>
+> Catch breaking points before they hit production — without triggering
+> real APIs, payments, or side effects.
 
-**clearvoiance** captures everything hitting your backend — HTTP, WebSockets, cron triggers, webhooks, queue messages — and replays it at N× speed against a hermetic clone of your system. You find the breaking points *before* production does.
+## Why?
+
+Staging environments lie.
+
+Mocks drift. Synthetic tests miss real edge cases.
+
+**clearvoiance** records actual traffic — HTTP, WebSockets, cron, queues,
+outbound calls, DB queries — and replays it in a hermetic environment
+so you can test against reality, not guesses.
+
+## 60-second flow
+
+```
+  1. install SDK              npm install @clearvoiance/node
+  2. hit your endpoint        curl http://localhost:3000/api/leads
+  3. see traffic appear       open dashboard → events stream in live
+  4. replay at 10×            click Replay → 10 min captured → 1 min real
+  5. break something safely   outbound calls mocked, zero real damage
+```
 
 ## The pitch
 
