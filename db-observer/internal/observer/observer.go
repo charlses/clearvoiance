@@ -185,7 +185,8 @@ func (o *Observer) tick(ctx context.Context) {
 			query
 		FROM pg_stat_activity
 		WHERE application_name LIKE $1
-		  AND state IS DISTINCT FROM 'idle'
+		  AND state IS NOT NULL
+		  AND state != 'idle'
 		  AND pid <> pg_backend_pid()
 	`, o.cfg.AppPrefix+"%")
 	if err != nil {
@@ -201,11 +202,11 @@ func (o *Observer) tick(ctx context.Context) {
 		var (
 			pid           int32
 			appName       string
-			state         string
+			state         *string
 			queryStart    *time.Time
 			waitEventType *string
 			waitEvent     *string
-			queryText     string
+			queryText     *string
 		)
 		if err := rows.Scan(&pid, &appName, &state, &queryStart, &waitEventType, &waitEvent, &queryText); err != nil {
 			o.log.Warn("pg_stat_activity scan failed", "err", err)
@@ -216,6 +217,14 @@ func (o *Observer) tick(ctx context.Context) {
 		parsed := ParseAppName(appName, o.cfg.AppPrefix)
 		if parsed == nil {
 			continue
+		}
+		// pg_stat_activity returns NULL for state on background workers
+		// and some transitional rows; treat them as empty so we don't
+		// choke the whole poll.
+		_ = state
+		queryTextStr := ""
+		if queryText != nil {
+			queryTextStr = *queryText
 		}
 
 		// Debounce: only emit once per (pid, query_start) pair. If the
@@ -260,8 +269,8 @@ func (o *Observer) tick(ctx context.Context) {
 			Type:             obsType,
 			ObservedAt:       now,
 			DurationNs:       duration.Nanoseconds(),
-			QueryText:        queryText,
-			QueryFingerprint: Fingerprint(queryText),
+			QueryText:        queryTextStr,
+			QueryFingerprint: Fingerprint(queryTextStr),
 			WaitEventType:    deref(waitEventType, ""),
 			WaitEvent:        deref(waitEvent, ""),
 		}
